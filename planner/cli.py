@@ -92,21 +92,22 @@ def cmd_init(args: argparse.Namespace) -> None:
         print("Use --force to overwrite.")
         return
 
+    current_year = date.today().year
     sample_config = {
         "projects": [
             {
                 "name": "Project Alpha",
-                "end_date": (date.today().replace(month=12, day=31)).isoformat(),
+                "end_date": date(current_year, 12, 31).isoformat(),
                 "remaining_days": 15,
             },
             {
                 "name": "Project Beta",
-                "end_date": (date.today().replace(month=12, day=15)).isoformat(),
+                "end_date": date(current_year, 12, 15).isoformat(),
                 "remaining_days": 8,
             },
             {
                 "name": "Project Gamma",
-                "end_date": (date.today().replace(month=11, day=30)).isoformat(),
+                "end_date": date(current_year, 11, 30).isoformat(),
                 "remaining_days": 3,
             },
         ]
