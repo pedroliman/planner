@@ -1,0 +1,19 @@
+[project]
+name = "planner"
+version = "0.1.0"
+description = "A minimalist project planner with GitHub-style tile visualization"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+planner = "planner.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

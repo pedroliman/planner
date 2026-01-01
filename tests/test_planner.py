@@ -1,0 +1,343 @@
+"""Tests for the project planner."""
+
+from datetime import date, timedelta
+
+import pytest
+
+from planner.models import Project, ScheduledSlot, Schedule
+from planner.scheduler import Scheduler
+from planner.visualization import render_tiles, render_statistics
+
+
+class TestProject:
+    """Tests for the Project model."""
+
+    def test_project_creation(self):
+        """Test basic project creation."""
+        project = Project(
+            name="Test Project",
+            end_date=date(2024, 12, 31),
+            remaining_days=10,
+        )
+        assert project.name == "Test Project"
+        assert project.end_date == date(2024, 12, 31)
+        assert project.remaining_days == 10
+
+    def test_slots_remaining(self):
+        """Test calculation of remaining slots (2 slots per day)."""
+        project = Project(
+            name="Test",
+            end_date=date(2024, 12, 31),
+            remaining_days=5,
+        )
+        assert project.slots_remaining == 10  # 5 days * 2 slots
+
+    def test_slots_remaining_half_day(self):
+        """Test half-day (4-hour) slot calculation."""
+        project = Project(
+            name="Small Project",
+            end_date=date(2024, 12, 31),
+            remaining_days=0.5,
+        )
+        assert project.slots_remaining == 1  # 0.5 days * 2 = 1 slot
+
+    def test_days_until_deadline(self):
+        """Test days until deadline calculation."""
+        project = Project(
+            name="Test",
+            end_date=date(2024, 12, 31),
+            remaining_days=5,
+        )
+        from_date = date(2024, 12, 1)
+        assert project.days_until_deadline(from_date) == 30
+
+
+class TestScheduledSlot:
+    """Tests for the ScheduledSlot model."""
+
+    def test_slot_creation(self):
+        """Test slot creation with project assignment."""
+        project = Project("Test", date(2024, 12, 31), 5)
+        slot = ScheduledSlot(date=date(2024, 11, 1), slot_index=0, project=project)
+
+        assert slot.date == date(2024, 11, 1)
+        assert slot.slot_index == 0
+        assert slot.project == project
+
+    def test_morning_slot(self):
+        """Test morning slot detection."""
+        slot = ScheduledSlot(date=date(2024, 11, 1), slot_index=0)
+        assert slot.is_morning
+        assert not slot.is_afternoon
+        assert slot.time_label == "AM"
+
+    def test_afternoon_slot(self):
+        """Test afternoon slot detection."""
+        slot = ScheduledSlot(date=date(2024, 11, 1), slot_index=1)
+        assert slot.is_afternoon
+        assert not slot.is_morning
+        assert slot.time_label == "PM"
+
+
+class TestSchedule:
+    """Tests for the Schedule model."""
+
+    def test_empty_schedule(self):
+        """Test empty schedule."""
+        schedule = Schedule()
+        assert len(schedule.slots) == 0
+        assert schedule.get_last_work_date() is None
+
+    def test_get_slots_for_date(self):
+        """Test getting slots for a specific date."""
+        project = Project("Test", date(2024, 12, 31), 5)
+        schedule = Schedule(
+            slots=[
+                ScheduledSlot(date(2024, 11, 1), 0, project),
+                ScheduledSlot(date(2024, 11, 1), 1, project),
+                ScheduledSlot(date(2024, 11, 2), 0, project),
+            ]
+        )
+
+        slots_nov_1 = schedule.get_slots_for_date(date(2024, 11, 1))
+        assert len(slots_nov_1) == 2
+
+        slots_nov_2 = schedule.get_slots_for_date(date(2024, 11, 2))
+        assert len(slots_nov_2) == 1
+
+    def test_get_project_slots(self):
+        """Test getting all slots for a project."""
+        project_a = Project("A", date(2024, 12, 31), 5)
+        project_b = Project("B", date(2024, 12, 31), 3)
+
+        schedule = Schedule(
+            slots=[
+                ScheduledSlot(date(2024, 11, 1), 0, project_a),
+                ScheduledSlot(date(2024, 11, 1), 1, project_b),
+                ScheduledSlot(date(2024, 11, 2), 0, project_a),
+            ]
+        )
+
+        a_slots = schedule.get_project_slots(project_a)
+        assert len(a_slots) == 2
+
+        b_slots = schedule.get_project_slots(project_b)
+        assert len(b_slots) == 1
+
+    def test_get_last_work_date(self):
+        """Test finding last work date."""
+        project = Project("Test", date(2024, 12, 31), 5)
+        schedule = Schedule(
+            slots=[
+                ScheduledSlot(date(2024, 11, 1), 0, project),
+                ScheduledSlot(date(2024, 11, 5), 0, None),  # Unassigned
+                ScheduledSlot(date(2024, 11, 3), 0, project),
+            ]
+        )
+
+        assert schedule.get_last_work_date() == date(2024, 11, 3)
+
+
+class TestScheduler:
+    """Tests for the Scheduler."""
+
+    def test_scheduler_creation(self):
+        """Test scheduler initialization."""
+        projects = [
+            Project("A", date(2024, 12, 31), 10),
+            Project("B", date(2024, 12, 31), 5),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 1))
+
+        assert len(scheduler.projects) == 2
+        assert scheduler.start_date == date(2024, 11, 1)
+
+    def test_create_schedule_basic(self):
+        """Test basic schedule creation."""
+        projects = [
+            Project("A", date(2024, 12, 31), 5),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))  # Monday
+        schedule = scheduler.create_schedule(num_weeks=2)
+
+        assert schedule.start_date == date(2024, 11, 4)
+        assert len(schedule.slots) > 0
+
+        # Should have slots for weekdays only
+        for slot in schedule.slots:
+            assert slot.date.weekday() < 5  # Monday-Friday
+
+    def test_schedule_assigns_all_work(self):
+        """Test that all work gets assigned when possible."""
+        projects = [
+            Project("Small", date(2024, 12, 31), 2),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=4)
+
+        project_slots = schedule.get_project_slots(projects[0])
+        # 2 days = 4 slots should be assigned
+        assert len(project_slots) == 4
+
+    def test_schedule_proportional_distribution(self):
+        """Test that projects get slots proportional to remaining work."""
+        projects = [
+            Project("Big", date(2024, 12, 31), 20),
+            Project("Small", date(2024, 12, 31), 5),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=8)
+
+        big_slots = len(schedule.get_project_slots(projects[0]))
+        small_slots = len(schedule.get_project_slots(projects[1]))
+
+        # Big project has 4x the work, should get approximately 4x the slots
+        # Allow some variance due to scheduling algorithm
+        ratio = big_slots / small_slots if small_slots > 0 else float('inf')
+        assert 2.0 <= ratio <= 6.0  # Reasonably proportional
+
+    def test_schedule_two_week_rule(self):
+        """Test that each project is worked on at least once every 2 weeks."""
+        projects = [
+            Project("A", date(2024, 12, 31), 30),
+            Project("B", date(2024, 12, 31), 30),
+            Project("C", date(2024, 12, 31), 30),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=8)
+
+        # Check each project
+        for project in projects:
+            project_slots = sorted(
+                schedule.get_project_slots(project),
+                key=lambda s: (s.date, s.slot_index)
+            )
+
+            if len(project_slots) >= 2:
+                # Check gap between consecutive slots
+                for i in range(1, len(project_slots)):
+                    prev_date = project_slots[i - 1].date
+                    curr_date = project_slots[i].date
+                    gap_days = (curr_date - prev_date).days
+                    # Gap should be at most 14 days (2 weeks)
+                    assert gap_days <= 14, f"Gap of {gap_days} days for {project.name}"
+
+    def test_get_statistics(self):
+        """Test statistics calculation."""
+        projects = [
+            Project("A", date(2024, 12, 31), 10),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=4)
+
+        stats = scheduler.get_statistics(schedule)
+        assert len(stats) == 1
+
+        stat = stats[0]
+        assert stat.project == projects[0]
+        assert stat.total_slots_assigned > 0
+        assert stat.days_per_week > 0
+
+
+class TestVisualization:
+    """Tests for the visualization module."""
+
+    def test_render_tiles_empty(self):
+        """Test rendering empty schedule."""
+        schedule = Schedule()
+        result = render_tiles(schedule)
+        assert "No schedule" in result
+
+    def test_render_tiles_basic(self):
+        """Test basic tile rendering."""
+        project = Project("Test", date(2024, 12, 31), 5)
+        schedule = Schedule(
+            slots=[
+                ScheduledSlot(date(2024, 11, 4), 0, project),
+                ScheduledSlot(date(2024, 11, 4), 1, project),
+            ],
+            start_date=date(2024, 11, 4),
+            end_date=date(2024, 11, 10),
+        )
+
+        result = render_tiles(schedule)
+        assert "Legend" in result
+        assert "Test" in result
+
+    def test_render_statistics(self):
+        """Test statistics rendering."""
+        project = Project("Test Project", date(2024, 12, 31), 5)
+        schedule = Schedule(
+            slots=[
+                ScheduledSlot(date(2024, 11, 4), 0, project),
+                ScheduledSlot(date(2024, 11, 4), 1, project),
+            ],
+            start_date=date(2024, 11, 4),
+            end_date=date(2024, 11, 10),
+        )
+
+        from planner.scheduler import ProjectStats
+        stats = [
+            ProjectStats(
+                project=project,
+                total_slots_assigned=2,
+                slots_per_week=2.0,
+                days_per_week=1.0,
+                last_scheduled_date=date(2024, 11, 4),
+            )
+        ]
+
+        result = render_statistics(stats, schedule)
+        assert "PROJECT STATISTICS" in result
+        assert "Test Project" in result
+        assert "days/week" in result
+
+
+class TestIntegration:
+    """Integration tests for the full workflow."""
+
+    def test_full_planning_workflow(self):
+        """Test complete planning workflow from projects to visualization."""
+        projects = [
+            Project("Alpha", date(2024, 12, 31), 15),
+            Project("Beta", date(2024, 12, 15), 8),
+            Project("Gamma", date(2024, 11, 30), 3),
+        ]
+
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=8)
+        stats = scheduler.get_statistics(schedule)
+
+        # Verify schedule was created
+        assert len(schedule.slots) > 0
+
+        # Verify all projects got assigned
+        for project in projects:
+            project_slots = schedule.get_project_slots(project)
+            assert len(project_slots) > 0, f"{project.name} has no assigned slots"
+
+        # Verify statistics
+        assert len(stats) == 3
+        for stat in stats:
+            assert stat.days_per_week >= 0
+
+        # Verify visualization works
+        tiles = render_tiles(schedule)
+        assert len(tiles) > 0
+
+        stats_output = render_statistics(stats, schedule)
+        assert len(stats_output) > 0
+
+    def test_half_day_scheduling(self):
+        """Test that small projects can be scheduled in half-day slots."""
+        projects = [
+            Project("Big", date(2024, 12, 31), 20),
+            Project("Tiny", date(2024, 12, 31), 0.5),  # Half a day
+        ]
+
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=4)
+
+        tiny_slots = schedule.get_project_slots(projects[1])
+        # Should have 1 slot (0.5 days = 1 slot)
+        assert len(tiny_slots) == 1
