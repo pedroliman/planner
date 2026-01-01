@@ -21,7 +21,12 @@ class Task:
         Args:
             title: The title of the task.
             description: Optional description of the task.
+        
+        Raises:
+            ValueError: If title is empty or only whitespace.
         """
+        if not title or not title.strip():
+            raise ValueError("Task title cannot be empty")
         self.title = title
         self.description = description
         self.completed = False

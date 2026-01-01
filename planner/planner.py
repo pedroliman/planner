@@ -26,7 +26,12 @@ class Planner:
         
         Args:
             task: The task to add.
+        
+        Raises:
+            ValueError: If task is None.
         """
+        if task is None:
+            raise ValueError("Task cannot be None")
         self.tasks.append(task)
     
     def remove_task(self, task: Task) -> None:

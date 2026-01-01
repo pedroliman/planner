@@ -118,6 +118,11 @@ class TestPlanner(unittest.TestCase):
         self.assertIn("Task 1", planner_str)
         self.assertIn("Task 2", planner_str)
         self.assertIn("Total: 2 tasks", planner_str)
+    
+    def test_add_none_task(self):
+        """Test that adding None task raises ValueError."""
+        with self.assertRaises(ValueError):
+            self.planner.add_task(None)
 
 
 if __name__ == "__main__":

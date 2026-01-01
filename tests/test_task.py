@@ -55,6 +55,16 @@ class TestTask(unittest.TestCase):
         self.assertIn("Task", repr_str)
         self.assertIn("Test task", repr_str)
         self.assertIn("completed=False", repr_str)
+    
+    def test_task_empty_title(self):
+        """Test that empty title raises ValueError."""
+        with self.assertRaises(ValueError):
+            Task("")
+    
+    def test_task_whitespace_title(self):
+        """Test that whitespace-only title raises ValueError."""
+        with self.assertRaises(ValueError):
+            Task("   ")
 
 
 if __name__ == "__main__":
