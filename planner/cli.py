@@ -70,17 +70,40 @@ def cmd_plan(args: argparse.Namespace) -> None:
     print(f"Planning {len(projects)} projects starting from {date.today()}")
     print()
 
-    # Create scheduler and generate schedule
+    # Create scheduler
     scheduler = Scheduler(projects, start_date=date.today())
-    schedule = scheduler.create_schedule(num_weeks=args.weeks)
 
-    # Display tile visualization
-    print(render_tiles(schedule))
+    # Generate both schedules
+    schedule_paced = scheduler.create_schedule(num_weeks=args.weeks, method="paced")
+    schedule_frontload = scheduler.create_schedule(num_weeks=args.weeks, method="frontload")
+
+    # Determine which schedule to show tiles for
+    selected_method = args.method
+    selected_schedule = schedule_paced if selected_method == "paced" else schedule_frontload
+
+    # Display tile visualization for selected method only
+    print(f"📅 Schedule Visualization ({selected_method.upper()} method)")
+    print("=" * 60)
+    print(render_tiles(selected_schedule))
     print()
 
-    # Display statistics
-    stats = scheduler.get_statistics(schedule)
-    print(render_statistics(stats, schedule))
+    # Display statistics for both methods
+    print("=" * 60)
+    print("📊 STATISTICS COMPARISON")
+    print("=" * 60)
+    print()
+
+    stats_paced = scheduler.get_statistics(schedule_paced)
+    stats_frontload = scheduler.get_statistics(schedule_frontload)
+
+    print("🎯 PACED METHOD (default)")
+    print("-" * 60)
+    print(render_statistics(stats_paced, schedule_paced))
+    print()
+
+    print("⚡ FRONTLOAD METHOD")
+    print("-" * 60)
+    print(render_statistics(stats_frontload, schedule_frontload))
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -141,6 +164,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         type=int,
         default=12,
         help="Number of weeks to plan ahead (default: 12)",
+    )
+    plan_parser.add_argument(
+        "-m", "--method",
+        choices=["paced", "frontload"],
+        default="paced",
+        help="Scheduling method: 'paced' (default, balanced) or 'frontload' (concentrated)",
     )
     plan_parser.set_defaults(func=cmd_plan)
 

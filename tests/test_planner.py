@@ -341,3 +341,174 @@ class TestIntegration:
         tiny_slots = schedule.get_project_slots(projects[1])
         # Should have 1 slot (0.5 days = 1 slot)
         assert len(tiny_slots) == 1
+
+
+class TestSchedulingMethods:
+    """Tests for different scheduling methods and edge cases."""
+
+    def test_empty_project_list(self):
+        """Test scheduling with no projects."""
+        projects = []
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+
+        schedule_paced = scheduler.create_schedule(num_weeks=4, method="paced")
+        schedule_frontload = scheduler.create_schedule(num_weeks=4, method="frontload")
+
+        # Should create schedules with only empty slots
+        assert len(schedule_paced.slots) > 0
+        assert len(schedule_frontload.slots) > 0
+        assert all(slot.project is None for slot in schedule_paced.slots)
+        assert all(slot.project is None for slot in schedule_frontload.slots)
+
+    def test_single_project(self):
+        """Test scheduling with a single project."""
+        projects = [Project("Solo", date(2024, 12, 31), 10)]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+
+        schedule_paced = scheduler.create_schedule(num_weeks=4, method="paced")
+        schedule_frontload = scheduler.create_schedule(num_weeks=4, method="frontload")
+
+        # Both should assign all 20 slots (10 days * 2 slots)
+        paced_slots = schedule_paced.get_project_slots(projects[0])
+        frontload_slots = schedule_frontload.get_project_slots(projects[0])
+
+        assert len(paced_slots) == 20
+        assert len(frontload_slots) == 20
+
+    def test_projects_with_zero_remaining_days(self):
+        """Test scheduling with projects that have no remaining work."""
+        projects = [
+            Project("Done", date(2024, 12, 31), 0),
+            Project("Active", date(2024, 12, 31), 5),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+
+        schedule = scheduler.create_schedule(num_weeks=4, method="paced")
+
+        # Done project should have no slots
+        done_slots = schedule.get_project_slots(projects[0])
+        active_slots = schedule.get_project_slots(projects[1])
+
+        assert len(done_slots) == 0
+        assert len(active_slots) == 10  # 5 days * 2 slots
+
+    def test_multiple_fractional_day_projects(self):
+        """Test scheduling with multiple projects having fractional days."""
+        projects = [
+            Project("Half", date(2024, 12, 31), 0.5),
+            Project("OneHalf", date(2024, 12, 31), 1.5),
+            Project("TwoHalf", date(2024, 12, 31), 2.5),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+
+        schedule = scheduler.create_schedule(num_weeks=4, method="paced")
+
+        # Verify slot counts (0.5 days = 1 slot, 1.5 days = 3 slots, 2.5 days = 5 slots)
+        assert len(schedule.get_project_slots(projects[0])) == 1
+        assert len(schedule.get_project_slots(projects[1])) == 3
+        assert len(schedule.get_project_slots(projects[2])) == 5
+
+    def test_frontload_concentrates_work(self):
+        """Test that frontload method concentrates work on each project."""
+        projects = [
+            Project("First", date(2024, 12, 31), 5),
+            Project("Second", date(2024, 12, 31), 5),
+            Project("Third", date(2024, 12, 31), 5),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+
+        schedule = scheduler.create_schedule(num_weeks=8, method="frontload")
+
+        # Get slots for each project sorted by date
+        first_slots = sorted(schedule.get_project_slots(projects[0]), key=lambda s: (s.date, s.slot_index))
+        second_slots = sorted(schedule.get_project_slots(projects[1]), key=lambda s: (s.date, s.slot_index))
+        third_slots = sorted(schedule.get_project_slots(projects[2]), key=lambda s: (s.date, s.slot_index))
+
+        # First project should end before second project starts
+        if first_slots and second_slots:
+            last_first = first_slots[-1].date
+            first_second = second_slots[0].date
+            assert last_first <= first_second, "Frontload should finish First before starting Second"
+
+        # Second project should end before third project starts
+        if second_slots and third_slots:
+            last_second = second_slots[-1].date
+            first_third = third_slots[0].date
+            assert last_second <= first_third, "Frontload should finish Second before starting Third"
+
+    def test_paced_method_distributes_work(self):
+        """Test that paced method distributes work across the schedule."""
+        projects = [
+            Project("A", date(2024, 12, 31), 10),
+            Project("B", date(2024, 12, 31), 10),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+
+        schedule = scheduler.create_schedule(num_weeks=8, method="paced")
+
+        # Get slots for each project sorted by date
+        a_slots = sorted(schedule.get_project_slots(projects[0]), key=lambda s: (s.date, s.slot_index))
+        b_slots = sorted(schedule.get_project_slots(projects[1]), key=lambda s: (s.date, s.slot_index))
+
+        # Both projects should have work spread across the schedule
+        # Check that both projects start early (not frontloaded)
+        assert len(a_slots) > 0 and len(b_slots) > 0
+
+        # Both should start in the first week
+        first_week_end = date(2024, 11, 10)
+        a_starts_early = any(slot.date <= first_week_end for slot in a_slots)
+        b_starts_early = any(slot.date <= first_week_end for slot in b_slots)
+
+        assert a_starts_early and b_starts_early, "Paced method should start both projects early"
+
+    def test_invalid_scheduling_method(self):
+        """Test that invalid scheduling method raises error."""
+        projects = [Project("Test", date(2024, 12, 31), 5)]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+
+        try:
+            scheduler.create_schedule(num_weeks=4, method="invalid")
+            assert False, "Should raise ValueError for invalid method"
+        except ValueError as e:
+            assert "invalid" in str(e).lower()
+
+    def test_all_same_remaining_days(self):
+        """Test scheduling when all projects have the same remaining days."""
+        projects = [
+            Project("A", date(2024, 12, 31), 5),
+            Project("B", date(2024, 12, 31), 5),
+            Project("C", date(2024, 12, 31), 5),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+
+        schedule_paced = scheduler.create_schedule(num_weeks=8, method="paced")
+        schedule_frontload = scheduler.create_schedule(num_weeks=8, method="frontload")
+
+        # All projects should get equal slots in both methods
+        for schedule in [schedule_paced, schedule_frontload]:
+            a_slots = len(schedule.get_project_slots(projects[0]))
+            b_slots = len(schedule.get_project_slots(projects[1]))
+            c_slots = len(schedule.get_project_slots(projects[2]))
+
+            # All should have 10 slots (5 days * 2 slots)
+            assert a_slots == 10
+            assert b_slots == 10
+            assert c_slots == 10
+
+    def test_too_much_work_for_schedule(self):
+        """Test scheduling when there's more work than available slots."""
+        projects = [
+            Project("Huge", date(2024, 12, 31), 100),  # 100 days = 200 slots
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+
+        # Only 4 weeks = 20 weekdays = 40 slots
+        schedule = scheduler.create_schedule(num_weeks=4, method="paced")
+
+        # Should only assign 40 slots (all available)
+        huge_slots = schedule.get_project_slots(projects[0])
+        assert len(huge_slots) == 40
+
+        # Statistics should show not fully scheduled
+        stats = scheduler.get_statistics(schedule)
+        assert not stats[0].fully_scheduled

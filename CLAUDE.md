@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A minimalist project planner with GitHub-style tile visualization. Zero production dependencies (pure Python stdlib). The planner schedules work across multiple projects using a proportional allocation algorithm with a two-week rule.
+A minimalist project planner with GitHub-style tile visualization. Zero production dependencies (pure Python stdlib).
+
+Supports two scheduling methods:
+- **Paced** (default): Balances work across projects with proportional allocation and a two-week rule
+- **Frontload**: Concentrates work by completing projects sequentially
 
 ## Common Commands
 
@@ -15,9 +19,10 @@ uv sync                    # Install dependencies
 
 ### Running the Application
 ```bash
-uv run planner init        # Create sample projects.json
-uv run planner plan        # Generate and display schedule
-uv run planner plan -w 24  # Plan for 24 weeks
+uv run planner init                      # Create sample projects.json
+uv run planner plan                      # Generate and display schedule (paced method)
+uv run planner plan --method frontload   # Use frontload method
+uv run planner plan -w 24                # Plan for 24 weeks
 ```
 
 ### Testing
@@ -42,19 +47,36 @@ The codebase has a clean modular structure with clear separation of concerns:
 
 Data flows: JSON config → Project objects → Scheduler → Schedule → Visualization
 
-### Scheduling Algorithm
+### Scheduling Algorithms
 
-The core scheduling logic in `scheduler.py:Scheduler` implements these rules:
+The `scheduler.py:Scheduler` class supports two scheduling methods via `create_schedule(num_weeks, method)`:
 
-1. **4-hour slot system**: Each day has 2 slots (AM/PM), weekdays only (Mon-Fri)
-2. **Proportional allocation**: Projects with more `remaining_days` get proportionally more slots
-3. **Two-week rule**: Each project must be scheduled at least once every 14 calendar days (MAX_GAP_SLOTS = 28)
-4. **Urgency-based selection**: `_get_most_urgent_project()` scores projects based on:
+#### Paced Method (`_create_schedule_paced`)
+Default method that balances work across all projects:
+
+1. **Proportional allocation**: Projects with more `remaining_days` get proportionally more slots
+2. **Two-week rule**: Each project must be scheduled at least once every 14 calendar days (MAX_GAP_SLOTS = 28)
+3. **Urgency-based selection**: `_get_most_urgent_project()` scores projects based on:
    - Time since last scheduled (prioritizes projects approaching 14-day gap)
    - Remaining work proportion (via `_calculate_weights()`)
-5. **Fractional day support**: `remaining_days` can be 0.5 for half-day (4-hour) slots
+4. **Even distribution**: Work is spread across the planning period
 
-The scheduler iterates through time slots chronologically, selecting projects using the urgency scoring until all work is allocated.
+The scheduler iterates through time slots chronologically, selecting projects using the urgency scoring.
+
+#### Frontload Method (`_create_schedule_frontload`)
+Concentrates work by completing projects sequentially:
+
+1. **Sequential processing**: Projects sorted by `slots_remaining` (descending)
+2. **Complete before moving**: Assigns all slots to current project before starting next
+3. **No two-week rule**: Projects may not be touched for weeks
+4. **Minimal context switching**: Optimizes for focus on one project at a time
+
+Both methods iterate through time slots, skip weekends, and support fractional days.
+
+#### Common Architecture
+- **4-hour slot system**: Each day has 2 slots (AM/PM), weekdays only (Mon-Fri)
+- **Fractional day support**: `remaining_days` can be 0.5 for half-day (4-hour) slots
+- **Method dispatching**: `create_schedule()` dispatches to the appropriate private method
 
 ### Time Slot System
 
@@ -98,10 +120,31 @@ Projects are defined in `projects.json`:
   - Weekday-only scheduling
   - All work assignment
   - Proportional distribution ratios
-  - Two-week rule enforcement (critical: verifies max 14-day gaps)
+  - Two-week rule enforcement (critical for paced method: verifies max 14-day gaps)
   - Statistics accuracy
+- **TestSchedulingMethods**: Edge cases for both scheduling methods:
+  - Empty project lists
+  - Single project
+  - Zero remaining days
+  - Fractional days
+  - Frontload concentration verification
+  - Paced distribution verification
+  - Invalid method handling
+  - Too much work for schedule
 
-When modifying the scheduler, ensure the two-week rule tests still pass (`test_two_week_rule_enforced`).
+When modifying scheduling methods:
+- Paced method: Ensure two-week rule tests still pass (`test_schedule_two_week_rule`, `test_paced_method_distributes_work`)
+- Frontload method: Ensure concentration tests pass (`test_frontload_concentrates_work`)
+
+### CLI Behavior
+
+When running `planner plan`:
+1. **Both methods executed**: Always runs both paced and frontload scheduling
+2. **Single tile view**: Shows tiles only for the selected method (default: paced)
+3. **Dual statistics**: Displays statistics comparison for both methods
+4. **Method selection**: Use `--method` or `-m` to choose which tiles to display
+
+This allows users to compare both approaches while focusing visualization on their preferred method.
 
 ## Important Notes
 
@@ -109,3 +152,4 @@ When modifying the scheduler, ensure the two-week rule tests still pass (`test_t
 - **Date handling**: Uses `datetime.date` throughout. The scheduler starts from "today" (`date.today()`) and iterates forward.
 - **Color assignment**: Projects get colors in order from `models.py:COLORS`. Wraps around if >6 projects.
 - **Configuration ignored**: `projects.json` is gitignored (user-specific data).
+- **Default method**: Always default to paced method for backward compatibility.

@@ -26,11 +26,16 @@ class ProjectStats:
 class Scheduler:
     """Schedule projects based on remaining work and deadlines.
 
-    The scheduling algorithm:
-    1. Iterates through each 4-hour slot (2 per day)
-    2. Assigns projects proportionally based on remaining days
-    3. Ensures each project is worked on at least once every 2 weeks
-    4. Supports half-day (4-hour) scheduling for smaller projects
+    Supports two scheduling methods:
+    - 'paced': Balances work across projects, ensuring each project is worked on
+               at least once every 2 weeks with proportional allocation
+    - 'frontload': Assigns as much work as possible to each project before
+                   moving to the next (concentrates work)
+
+    Both methods:
+    1. Iterate through each 4-hour slot (2 per day)
+    2. Skip weekends (Monday-Friday only)
+    3. Support half-day (4-hour) scheduling for smaller projects
     """
 
     # Maximum gap between working on the same project (in slots, 2 weeks = 28 slots)
@@ -113,8 +118,31 @@ class Scheduler:
 
         return best_project
 
-    def create_schedule(self, num_weeks: int = 12) -> Schedule:
+    def create_schedule(self, num_weeks: int = 12, method: str = "paced") -> Schedule:
         """Create a schedule for the specified number of weeks.
+
+        Args:
+            num_weeks: Number of weeks to plan ahead
+            method: Scheduling method - 'paced' (default) or 'frontload'
+
+        Returns:
+            Schedule with assigned slots
+
+        Raises:
+            ValueError: If method is not 'paced' or 'frontload'
+        """
+        if method == "paced":
+            return self._create_schedule_paced(num_weeks)
+        elif method == "frontload":
+            return self._create_schedule_frontload(num_weeks)
+        else:
+            raise ValueError(f"Unknown scheduling method: {method}. Use 'paced' or 'frontload'.")
+
+    def _create_schedule_paced(self, num_weeks: int = 12) -> Schedule:
+        """Create a paced schedule that balances work across projects.
+
+        This method ensures each project is worked on at least once every 2 weeks
+        and assigns work proportionally based on remaining days.
 
         Args:
             num_weeks: Number of weeks to plan ahead
@@ -159,6 +187,62 @@ class Scheduler:
 
                 schedule.slots.append(slot)
                 slot_index += 1
+
+        return schedule
+
+    def _create_schedule_frontload(self, num_weeks: int = 12) -> Schedule:
+        """Create a frontload schedule that concentrates work on projects.
+
+        This method assigns as much work as possible to each project before
+        moving to the next. Projects are ordered by remaining work (descending).
+
+        Args:
+            num_weeks: Number of weeks to plan ahead
+
+        Returns:
+            Schedule with assigned slots
+        """
+        schedule = Schedule()
+        schedule.start_date = self.start_date
+        schedule.end_date = self.start_date + timedelta(weeks=num_weeks)
+
+        # Sort projects by remaining work (descending) for frontloading
+        sorted_projects = sorted(self.projects, key=lambda p: p.slots_remaining, reverse=True)
+
+        # Track remaining work for each project (in slots)
+        remaining_work = {p: p.slots_remaining for p in self.projects}
+
+        # Generate slots for each day
+        num_days = num_weeks * 7
+        current_project_idx = 0
+
+        for day_offset in range(num_days):
+            current_date = self.start_date + timedelta(days=day_offset)
+
+            # Skip weekends
+            if current_date.weekday() >= 5:
+                continue
+
+            # Create two slots per day (AM and PM)
+            for slot_of_day in range(2):
+                slot = ScheduledSlot(date=current_date, slot_index=slot_of_day)
+
+                # Find the next project with remaining work
+                project = None
+                while current_project_idx < len(sorted_projects):
+                    candidate = sorted_projects[current_project_idx]
+                    if remaining_work[candidate] > 0:
+                        project = candidate
+                        break
+                    else:
+                        # Move to next project when current one is done
+                        current_project_idx += 1
+
+                if project:
+                    slot.project = project
+                    remaining_work[project] -= 1
+
+                schedule.slots.append(slot)
 
         return schedule
 

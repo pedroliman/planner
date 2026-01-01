@@ -4,12 +4,14 @@ A minimalist project planner with GitHub-style tile visualization.
 
 ## Features
 
-- **Project scheduling**: Automatically schedule work across multiple projects
+- **Two scheduling methods**:
+  - **Paced** (default): Balances work across projects with proportional allocation and a two-week rule
+  - **Frontload**: Concentrates work by completing projects sequentially
 - **GitHub-style visualization**: See your schedule as a color-coded tile grid
-- **Smart allocation**: Projects with more remaining work get proportionally more time
-- **Two-week rule**: Each project is worked on at least once every two weeks
+- **Smart allocation**: Projects with more remaining work get proportionally more time (paced mode)
 - **Half-day support**: Schedule 4-hour slots for smaller projects
-- **Key statistics**: Know when you'll run out of work and how many days per week per project
+- **Statistics comparison**: Compare both scheduling methods side-by-side
+- **Key insights**: Know when you'll run out of work and how many days per week per project
 
 ## Installation
 
@@ -59,6 +61,20 @@ uv run planner plan
 
 - `-c, --config` - Path to configuration file (default: `projects.json`)
 - `-w, --weeks` - Number of weeks to plan ahead (default: 12)
+- `-m, --method` - Scheduling method: `paced` (default, balanced) or `frontload` (concentrated)
+
+### Examples
+
+```bash
+# Use default paced method
+uv run planner plan
+
+# Use frontload method
+uv run planner plan --method frontload
+
+# Plan 24 weeks with paced method
+uv run planner plan -w 24
+```
 
 ### Example Output
 
@@ -94,15 +110,36 @@ Days per week by project:
 Legend: ✓ = fully scheduled, ○ = partially scheduled
 ```
 
-## Scheduling Algorithm
+## Scheduling Methods
 
-The planner uses a scheduling algorithm with the following rules:
+The planner supports two scheduling approaches:
 
-1. **Iterate through 4-hour slots**: Each day has 2 slots (AM and PM)
-2. **Proportional allocation**: Projects with more remaining days get more slots
-3. **Two-week rule**: Each project must be worked on at least once every 2 weeks
-4. **Urgency-based priority**: Projects that haven't been worked on recently get higher priority
-5. **Weekday scheduling**: Only Monday-Friday are scheduled
+### Paced Method (Default)
+
+The paced method balances work across all projects:
+
+1. **Proportional allocation**: Projects with more remaining days get more slots
+2. **Two-week rule**: Each project must be worked on at least once every 2 weeks
+3. **Urgency-based priority**: Projects that haven't been worked on recently get higher priority
+4. **Even distribution**: Work is spread across the planning period
+
+Use this when you want to maintain momentum on all projects simultaneously.
+
+### Frontload Method
+
+The frontload method concentrates work on one project at a time:
+
+1. **Sequential completion**: Finish projects one at a time (ordered by remaining work)
+2. **Maximum focus**: Dedicate all available time to the current project
+3. **Clear progression**: See projects complete fully before starting the next
+
+Use this when you want to minimize context switching and complete projects faster.
+
+### Common Rules (Both Methods)
+
+1. **4-hour slots**: Each day has 2 slots (AM and PM)
+2. **Weekday scheduling**: Only Monday-Friday are scheduled
+3. **Half-day support**: Projects with fractional days (e.g., 0.5) use individual slots
 
 ## Development
 
