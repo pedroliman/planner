@@ -10,9 +10,16 @@ from typing import Optional
 from planner.models import Project
 from planner.scheduler import Scheduler
 from planner.visualization import render_tiles, render_statistics
+from planner.importer import (
+    read_excel_projects,
+    update_projects_json,
+    load_import_config,
+    save_default_import_config,
+)
 
 
 DEFAULT_CONFIG_FILE = "projects.json"
+DEFAULT_IMPORT_CONFIG_FILE = "import_config.json"
 
 
 def load_projects(config_path: str) -> list[Project]:
@@ -48,10 +55,23 @@ def load_projects(config_path: str) -> list[Project]:
     projects = []
     for i, p in enumerate(data.get("projects", [])):
         end_date = datetime.strptime(p["end_date"], "%Y-%m-%d").date()
+
+        # Parse optional start_date
+        start_date = None
+        if "start_date" in p and p["start_date"]:
+            start_date = datetime.strptime(p["start_date"], "%Y-%m-%d").date()
+
+        # Parse optional renewal_days
+        renewal_days = None
+        if "renewal_days" in p and p["renewal_days"]:
+            renewal_days = float(p["renewal_days"])
+
         project = Project(
             name=p["name"],
             end_date=end_date,
             remaining_days=float(p["remaining_days"]),
+            start_date=start_date,
+            renewal_days=renewal_days,
             _color_index=i,
         )
         projects.append(project)
@@ -143,6 +163,69 @@ def cmd_init(args: argparse.Namespace) -> None:
     print("Edit this file to add your projects, then run 'planner plan'")
 
 
+def cmd_import(args: argparse.Namespace) -> None:
+    """Import or update projects from an Excel file."""
+    try:
+        # Load import configuration
+        config = load_import_config(args.import_config)
+
+        print(f"Reading Excel file: {args.excel_file}")
+        print(f"Using import config: {args.import_config}")
+        print()
+
+        # Read projects from Excel
+        new_projects = read_excel_projects(args.excel_file, config)
+
+        print(f"Found {len(new_projects)} projects in Excel file")
+        print()
+
+        # Update projects.json
+        stats = update_projects_json(new_projects, args.config)
+
+        # Display results
+        print("Import completed successfully!")
+        print(f"  Added: {stats['added']} projects")
+        print(f"  Updated: {stats['updated']} projects")
+        print(f"  Unchanged: {stats['unchanged']} projects")
+        print()
+        print(f"Projects saved to: {args.config}")
+
+    except ImportError as e:
+        print(f"Error: {e}")
+        print()
+        print("To enable Excel import, install openpyxl:")
+        print("  uv pip install openpyxl")
+        print("  or: pip install planner[excel]")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error during import: {e}")
+        sys.exit(1)
+
+
+def cmd_init_import_config(args: argparse.Namespace) -> None:
+    """Initialize a sample import configuration file."""
+    config_path = Path(args.import_config)
+
+    if config_path.exists() and not args.force:
+        print(f"Import configuration file '{args.import_config}' already exists.")
+        print("Use --force to overwrite.")
+        return
+
+    save_default_import_config(args.import_config)
+    print(f"Created sample import configuration file: {args.import_config}")
+    print("Edit this file to customize the column mapping for your Excel file.")
+    print()
+    print("Default configuration:")
+    print("  - Sheet: First sheet (index 0)")
+    print("  - Header row: Row 1")
+    print("  - Column mapping:")
+    print("    - 'Project Name' → name")
+    print("    - 'End Date' → end_date")
+    print("    - 'Remaining Days' → remaining_days")
+    print("    - 'Start Date' → start_date (optional)")
+    print("    - 'Renewal Days' → renewal_days (optional)")
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -162,8 +245,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     plan_parser.add_argument(
         "-w", "--weeks",
         type=int,
-        default=12,
-        help="Number of weeks to plan ahead (default: 12)",
+        default=52,
+        help="Number of weeks to plan ahead (default: 52)",
     )
     plan_parser.add_argument(
         "-m", "--method",
@@ -181,6 +264,36 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Overwrite existing configuration file",
     )
     init_parser.set_defaults(func=cmd_init)
+
+    # import command
+    import_parser = subparsers.add_parser("import", help="Import or update projects from Excel file")
+    import_parser.add_argument(
+        "excel_file",
+        help="Path to Excel file (.xlsx) to import",
+    )
+    import_parser.add_argument(
+        "--import-config",
+        default=DEFAULT_IMPORT_CONFIG_FILE,
+        help=f"Path to import configuration file (default: {DEFAULT_IMPORT_CONFIG_FILE})",
+    )
+    import_parser.set_defaults(func=cmd_import)
+
+    # init-import-config command
+    init_import_parser = subparsers.add_parser(
+        "init-import-config",
+        help="Initialize a sample import configuration file"
+    )
+    init_import_parser.add_argument(
+        "--import-config",
+        default=DEFAULT_IMPORT_CONFIG_FILE,
+        help=f"Path to import configuration file (default: {DEFAULT_IMPORT_CONFIG_FILE})",
+    )
+    init_import_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing configuration file",
+    )
+    init_import_parser.set_defaults(func=cmd_init_import_config)
 
     args = parser.parse_args(argv)
 

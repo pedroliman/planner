@@ -26,18 +26,28 @@ class Project:
         name: The project name
         end_date: The deadline for the project
         remaining_days: Number of full days of work remaining
+        start_date: When the project starts (defaults to today if not specified)
+        renewal_days: If set, creates a renewal project with this many days after completion
+        is_renewal: Internal flag to track if this is a renewal project
+        parent_name: Name of the parent project if this is a renewal
         color: ANSI color code for visualization (auto-assigned if not provided)
     """
 
     name: str
     end_date: date
     remaining_days: float  # Can be fractional for half-days
+    start_date: Optional[date] = None
+    renewal_days: Optional[float] = None
+    is_renewal: bool = False
+    parent_name: Optional[str] = None
     color: Optional[str] = None
     _color_index: int = field(default=0, repr=False)
 
     def __post_init__(self):
         if self.color is None:
             self.color = DEFAULT_COLORS[self._color_index % len(DEFAULT_COLORS)]
+        if self.start_date is None:
+            self.start_date = date.today()
 
     @property
     def slots_remaining(self) -> int:

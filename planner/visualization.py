@@ -10,7 +10,7 @@ def render_tiles(schedule: Schedule, show_legend: bool = True) -> str:
     """Render the schedule as a GitHub-style tile visualization.
 
     Each day shows as a tile with the project's color.
-    If a day has two different projects, it shows as a split tile.
+    Includes spacing between days, weeks, and months for better readability.
 
     Args:
         schedule: The schedule to visualize
@@ -43,66 +43,98 @@ def render_tiles(schedule: Schedule, show_legend: bool = True) -> str:
             lines.append("Legend:")
             for project in sorted(projects, key=lambda p: p.name):
                 block = f"{project.color}██{RESET_COLOR}"
-                lines.append(f"  {block} {project.name}")
+                renewal_indicator = " (Renewal)" if project.is_renewal else ""
+                lines.append(f"  {block} {project.name}{renewal_indicator}")
             lines.append(f"  ░░ Unassigned")
             lines.append("")
 
-    # Header with week markers
-    lines.append(_render_header(start_date, end_date))
+    # Render month headers and calendar grid
+    lines.extend(_render_calendar_grid(schedule, start_date, end_date))
 
-    # Render weeks (7 rows, one per day of week)
+    return "\n".join(lines)
+
+
+def _render_calendar_grid(schedule: Schedule, start_date: date, end_date: date) -> list[str]:
+    """Render the calendar grid with month labels and spacing.
+
+    Returns:
+        List of output lines
+    """
+    lines = []
+
+    # Build a list of all dates in the range
+    all_dates = []
+    current = start_date
+    while current <= end_date:
+        all_dates.append(current)
+        current = current + timedelta(days=1)
+
+    if not all_dates:
+        return lines
+
+    # Render month header
+    month_header = "    "  # Align with day names
+    prev_month = None
+    for i, d in enumerate(all_dates):
+        # Add spacing before this date
+        if i > 0:
+            prev_date = all_dates[i - 1]
+            # Larger spacing at month boundaries
+            if d.month != prev_date.month:
+                month_header += "  "  # Month boundary spacing
+            # Small spacing between weeks (Monday)
+            elif d.weekday() == 0:
+                month_header += " "  # Week boundary spacing
+            else:
+                month_header += ""  # Day boundary (tile includes spacing)
+
+        # Show month label at start of each month
+        if d.month != prev_month:
+            month_header += d.strftime("%b")[:3]
+            prev_month = d.month
+            # Pad to align with tiles
+            month_header += " " * (len(all_dates) // 30)  # Rough estimate
+        else:
+            month_header += "  "  # Two chars per tile
+
+    lines.append(month_header)
+
+    # Render day-of-week rows
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
     for day_of_week in range(7):
         row = f"{day_names[day_of_week]:<3} "
-        current_date = start_date
 
-        # Adjust to start from the correct day of week
-        while current_date.weekday() != day_of_week:
-            if current_date.weekday() > day_of_week:
-                # Need to go to next week
-                current_date = current_date + timedelta(days=(7 - current_date.weekday() + day_of_week))
-                break
-            current_date = current_date + timedelta(days=1)
+        prev_month = None
+        for i, d in enumerate(all_dates):
+            # Skip if this date is not the current day of week
+            if d.weekday() != day_of_week:
+                continue
 
-        # If we went past start, need to find first occurrence
-        if current_date > end_date:
-            # Start from beginning and find first day_of_week
-            current_date = start_date
-            days_ahead = day_of_week - current_date.weekday()
-            if days_ahead < 0:
-                days_ahead += 7
-            current_date = current_date + timedelta(days=days_ahead)
+            # Add spacing before this tile
+            if prev_month is not None:
+                # Larger spacing at month boundaries
+                if d.month != prev_month:
+                    row += "  "  # Month boundary spacing
+                # Small spacing between weeks
+                elif i > 0 and all_dates[i - 1].weekday() == 6:
+                    row += " "  # Week boundary spacing
 
-        # Add leading spaces for partial first week
-        first_date = start_date
-        days_until = (current_date - first_date).days
-        weeks_offset = days_until // 7
-        if current_date.weekday() < first_date.weekday():
-            weeks_offset = 0
-        elif current_date < first_date:
-            weeks_offset = 0
+            prev_month = d.month
 
-        # Find proper starting position
-        if start_date.weekday() > day_of_week:
-            # This day of week hasn't occurred yet in first week
-            row += "  "  # Empty space for missing first week
-
-        while current_date <= end_date:
-            slots = schedule.get_slots_for_date(current_date)
-
+            # Render the tile
+            slots = schedule.get_slots_for_date(d)
             if slots:
                 tile = _render_day_tile(slots)
             else:
                 # Weekend or no slots
                 tile = "  "
 
-            row += tile
-            current_date = current_date + timedelta(days=7)
+            row += tile + " "  # Add tiny space after each day
 
         lines.append(row)
 
-    return "\n".join(lines)
+    return lines
 
 
 def _render_header(start_date: date, end_date: date) -> str:
