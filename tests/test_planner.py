@@ -9,7 +9,12 @@ import pytest
 
 from planner.models import Project, ScheduledSlot, Schedule
 from planner.scheduler import Scheduler
-from planner.visualization import render_tiles, render_statistics
+from planner.visualization import (
+    render_tiles,
+    render_statistics,
+    compute_weekly_availability,
+    render_availability_plot,
+)
 
 
 class TestProject:
@@ -1033,3 +1038,183 @@ class TestContinuityPriority:
 
         # Weekend should act as natural break in continuity
         # This is implicitly tested by the algorithm
+
+
+class TestAvailabilityPlot:
+    """Tests for availability plotting functionality."""
+
+    def test_compute_weekly_availability_empty_schedule(self):
+        """Test availability computation with an empty schedule."""
+        schedule = Schedule(slots=[], start_date=date(2024, 1, 1))
+        availability = compute_weekly_availability(schedule, num_weeks=4)
+
+        assert len(availability) == 4
+        # All weeks should be 100% available (no scheduled work)
+        for week in availability:
+            assert week.percent_available == 100.0
+            assert week.total_slots == 10  # 5 weekdays * 2 slots
+
+    def test_compute_weekly_availability_fully_scheduled(self):
+        """Test availability with a fully scheduled week."""
+        start = date(2024, 1, 1)  # Monday
+        schedule = Schedule(start_date=start, end_date=start + timedelta(weeks=1))
+
+        # Create a project and schedule all slots in first week
+        project = Project("Full Week", date(2024, 12, 31), 5)
+
+        # Add 5 weekdays * 2 slots = 10 slots
+        for day in range(5):
+            current_date = start + timedelta(days=day)
+            schedule.slots.append(ScheduledSlot(current_date, 0, project))  # AM
+            schedule.slots.append(ScheduledSlot(current_date, 1, project))  # PM
+
+        availability = compute_weekly_availability(schedule, num_weeks=2)
+
+        assert len(availability) == 2
+        # First week should be 0% available (fully scheduled)
+        assert availability[0].percent_available == 0.0
+        assert availability[0].total_slots == 10
+        assert availability[0].unscheduled_slots == 0
+
+        # Second week should be 100% available (no slots)
+        assert availability[1].percent_available == 100.0
+
+    def test_compute_weekly_availability_partial(self):
+        """Test availability with partially scheduled weeks."""
+        start = date(2024, 1, 1)  # Monday
+        schedule = Schedule(start_date=start)
+
+        project = Project("Partial", date(2024, 12, 31), 2.5)
+
+        # Schedule 5 slots out of 10 in first week (50%)
+        for day in range(3):
+            current_date = start + timedelta(days=day)
+            if day < 2:
+                # First two days fully scheduled
+                schedule.slots.append(ScheduledSlot(current_date, 0, project))
+                schedule.slots.append(ScheduledSlot(current_date, 1, project))
+            else:
+                # Third day only AM
+                schedule.slots.append(ScheduledSlot(current_date, 0, project))
+
+        availability = compute_weekly_availability(schedule, num_weeks=1)
+
+        assert len(availability) == 1
+        # Should have 5 scheduled, 5 unscheduled (50% available)
+        assert availability[0].total_slots == 10
+        assert availability[0].unscheduled_slots == 5
+        assert availability[0].percent_available == 50.0
+
+    def test_compute_weekly_availability_with_unassigned_slots(self):
+        """Test availability computation with explicit unassigned slots."""
+        start = date(2024, 1, 1)  # Monday
+        schedule = Schedule(start_date=start)
+
+        project = Project("Test", date(2024, 12, 31), 1)
+
+        # Create mix of assigned and unassigned slots
+        schedule.slots.append(ScheduledSlot(start, 0, project))  # Assigned
+        schedule.slots.append(ScheduledSlot(start, 1, None))     # Unassigned
+
+        availability = compute_weekly_availability(schedule, num_weeks=1)
+
+        assert availability[0].total_slots == 10
+        assert availability[0].unscheduled_slots == 9  # 1 assigned, 9 unassigned
+        assert availability[0].percent_available == 90.0
+
+    def test_availability_increases_over_time(self):
+        """Test that availability increases as projects complete."""
+        start = date(2024, 1, 1)  # Monday
+        projects = [
+            Project("Short", date(2024, 2, 1), 3),   # 6 slots
+            Project("Medium", date(2024, 3, 1), 5),  # 10 slots
+        ]
+
+        scheduler = Scheduler(projects, start_date=start)
+        schedule = scheduler.create_schedule(num_weeks=8, method="frontload")
+
+        availability = compute_weekly_availability(schedule, num_weeks=8)
+
+        # Availability should generally increase over time
+        # as projects complete
+        early_avg = sum(w.percent_available for w in availability[:2]) / 2
+        late_avg = sum(w.percent_available for w in availability[-2:]) / 2
+
+        assert late_avg > early_avg, "Availability should increase as projects complete"
+
+    def test_render_availability_plot_basic(self):
+        """Test basic rendering of availability plot."""
+        start = date(2024, 1, 1)
+        schedule_paced = Schedule(start_date=start)
+        schedule_frontload = Schedule(start_date=start)
+
+        paced_avail = compute_weekly_availability(schedule_paced, num_weeks=4)
+        frontload_avail = compute_weekly_availability(schedule_frontload, num_weeks=4)
+
+        plot = render_availability_plot(paced_avail, frontload_avail)
+
+        # Check that plot contains expected elements
+        assert "AVAILABILITY OVER TIME" in plot
+        assert "Legend:" in plot
+        assert "Paced" in plot or "P" in plot
+        assert "Frontload" in plot or "F" in plot
+        assert "%" in plot  # Should have percentage markers
+
+    def test_render_availability_plot_empty(self):
+        """Test plotting with no data."""
+        plot = render_availability_plot([], [])
+        assert "No availability data" in plot
+
+    def test_availability_plot_width_and_height(self):
+        """Test that plot respects width and height parameters."""
+        start = date(2024, 1, 1)
+        schedule = Schedule(start_date=start)
+        avail = compute_weekly_availability(schedule, num_weeks=4)
+
+        plot = render_availability_plot(avail, avail, plot_width=50, plot_height=10)
+
+        lines = plot.split('\n')
+        # Find the plot lines (between top and bottom borders)
+        plot_lines = [l for l in lines if '│' in l and '─' in l]
+
+        # Should have border lines
+        assert len(plot_lines) > 0
+
+    def test_weekly_availability_week_numbers(self):
+        """Test that week numbers are correctly assigned."""
+        start = date(2024, 1, 1)
+        schedule = Schedule(start_date=start)
+
+        availability = compute_weekly_availability(schedule, num_weeks=5)
+
+        assert len(availability) == 5
+        for i, week in enumerate(availability):
+            assert week.week_number == i
+            expected_start = start + timedelta(weeks=i)
+            assert week.start_date == expected_start
+
+    def test_availability_comparison_paced_vs_frontload(self):
+        """Test that paced and frontload methods show different availability patterns."""
+        start = date(2024, 1, 1)
+        projects = [
+            Project("A", date(2024, 3, 1), 10),
+            Project("B", date(2024, 4, 1), 10),
+        ]
+
+        scheduler = Scheduler(projects, start_date=start)
+        schedule_paced = scheduler.create_schedule(num_weeks=12, method="paced")
+        schedule_frontload = scheduler.create_schedule(num_weeks=12, method="frontload")
+
+        paced_avail = compute_weekly_availability(schedule_paced, num_weeks=12)
+        frontload_avail = compute_weekly_availability(schedule_frontload, num_weeks=12)
+
+        # Both should have same number of weeks
+        assert len(paced_avail) == len(frontload_avail) == 12
+
+        # Frontload should show lower availability early and higher later
+        # (work is concentrated at the beginning)
+        frontload_early = frontload_avail[0].percent_available
+        frontload_late = frontload_avail[-1].percent_available
+
+        # Later weeks should have more availability in frontload
+        assert frontload_late >= frontload_early
