@@ -1,40 +1,40 @@
 {
   "projects": [
     {
-      "name": "MGS Opt",
+      "name": "MGS",
       "end_date": "2026-03-30",
       "remaining_days": 28,
       "renewal_days": 10
     },
     {
-      "name": "COVID",
+      "name": "CVD-R01",
       "end_date": "2026-08-31",
       "remaining_days": 23
     },
     {
-      "name": "HIV",
+      "name": "HIV-R01",
       "end_date": "2026-07-31",
       "remaining_days": 12,
       "renewal_days": 18
     },
     {
-      "name": "CRC Unequal",
+      "name": "CRC-R01",
       "end_date": "2026-03-31",
       "remaining_days": 12,
       "renewal_days": 18
     },
     {
-      "name": "Spillover",
+      "name": "Spill",
       "end_date": "2026-12-31",
       "remaining_days": 5
     },
     {
-      "name": "OPTIC",
+      "name": "OPTC",
       "end_date": "2026-06-30",
       "remaining_days": 27
     },
     {
-      "name": "Proposals",
+      "name": "Props",
       "end_date": "2026-06-30",
       "remaining_days": 10
     }

@@ -45,3 +45,4 @@ uv.lock
 *.css
 *.js
 *.woff
+*quarto_ipynb

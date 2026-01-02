@@ -3,6 +3,7 @@
 import json
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
