@@ -2,8 +2,99 @@
 
 from datetime import date, timedelta
 from typing import Optional
+from dataclasses import dataclass
 
 from planner.models import Schedule, Project, RESET_COLOR
+
+
+@dataclass
+class WeeklyAvailability:
+    """Availability statistics for a single week.
+
+    Attributes:
+        week_number: Week number (0-indexed from start of schedule)
+        start_date: First date of the week
+        total_slots: Total available work slots in the week (excludes weekends)
+        unscheduled_slots: Number of slots without assigned projects
+        percent_available: Percentage of slots that are unscheduled (0-100)
+    """
+    week_number: int
+    start_date: date
+    total_slots: int
+    unscheduled_slots: int
+
+    @property
+    def percent_available(self) -> float:
+        """Calculate percentage of unscheduled slots."""
+        if self.total_slots == 0:
+            return 100.0
+        return (self.unscheduled_slots / self.total_slots) * 100.0
+
+
+def compute_weekly_availability(schedule: Schedule, num_weeks: int) -> list[WeeklyAvailability]:
+    """Compute availability percentage for each week in the schedule.
+
+    Args:
+        schedule: The schedule to analyze
+        num_weeks: Number of weeks in the planning horizon
+
+    Returns:
+        List of WeeklyAvailability objects, one per week
+    """
+    if not schedule.start_date:
+        return []
+
+    weekly_stats = []
+    current_week_start = schedule.start_date
+
+    for week_num in range(num_weeks):
+        # Calculate the date range for this week
+        week_end = current_week_start + timedelta(days=6)
+
+        # Count slots in this week
+        total_slots = 0
+        unscheduled_slots = 0
+
+        # Iterate through each day in the week
+        for day_offset in range(7):
+            current_date = current_week_start + timedelta(days=day_offset)
+
+            # Skip weekends (Saturday=5, Sunday=6)
+            if current_date.weekday() >= 5:
+                continue
+
+            # Count slots for this day (always 2 slots per weekday: AM and PM)
+            day_slots = schedule.get_slots_for_date(current_date)
+
+            if not day_slots:
+                # If no slots exist for this date, assume 2 unscheduled slots
+                total_slots += 2
+                unscheduled_slots += 2
+            else:
+                # We always have 2 slots per weekday
+                total_slots += 2
+
+                # Check which slots are scheduled
+                has_am = any(s.slot_index == 0 and s.project is not None for s in day_slots)
+                has_pm = any(s.slot_index == 1 and s.project is not None for s in day_slots)
+
+                # Count unscheduled slots
+                if not has_am:
+                    unscheduled_slots += 1
+                if not has_pm:
+                    unscheduled_slots += 1
+
+        weekly_stats.append(WeeklyAvailability(
+            week_number=week_num,
+            start_date=current_week_start,
+            total_slots=total_slots,
+            unscheduled_slots=unscheduled_slots,
+        ))
+
+        # Move to next week
+        current_week_start += timedelta(weeks=1)
+
+    return weekly_stats
 
 
 def render_tiles(schedule: Schedule, show_legend: bool = True) -> str:
@@ -195,6 +286,139 @@ def _render_day_tile(slots: list) -> str:
         return f"░{pm_project.color}█{RESET_COLOR}"
     else:
         return "░░"
+
+
+def render_availability_plot(
+    paced_availability: list[WeeklyAvailability],
+    frontload_availability: list[WeeklyAvailability],
+    plot_width: int = 100,
+    plot_height: int = 15
+) -> str:
+    """Render an ASCII line plot showing availability over time for both methods.
+
+    Args:
+        paced_availability: Weekly availability stats for paced method
+        frontload_availability: Weekly availability stats for frontload method
+        plot_width: Width of the plot in characters
+        plot_height: Height of the plot in characters
+
+    Returns:
+        String representation of the availability plot
+    """
+    if not paced_availability and not frontload_availability:
+        return "No availability data to plot."
+
+    lines = []
+    lines.append("")
+    lines.append("📈 AVAILABILITY OVER TIME")
+    lines.append("=" * 60)
+    lines.append("")
+
+    # Determine number of weeks
+    num_weeks = max(
+        len(paced_availability) if paced_availability else 0,
+        len(frontload_availability) if frontload_availability else 0
+    )
+
+    if num_weeks == 0:
+        return "No weeks to plot."
+
+    # Create a 2D grid for the plot
+    grid = [[' ' for _ in range(plot_width)] for _ in range(plot_height)]
+
+    # Helper function to map week to x coordinate
+    def week_to_x(week_num: int) -> int:
+        if num_weeks <= 1:
+            return plot_width // 2
+        return int((week_num / (num_weeks - 1)) * (plot_width - 1))
+
+    # Helper function to map percentage to y coordinate (inverted: 100% at top, 0% at bottom)
+    def percent_to_y(percent: float) -> int:
+        return int(((100.0 - percent) / 100.0) * (plot_height - 1))
+
+    # Plot paced method line (using 'P' markers)
+    for i, week_stat in enumerate(paced_availability):
+        x = week_to_x(i)
+        y = percent_to_y(week_stat.percent_available)
+        if 0 <= x < plot_width and 0 <= y < plot_height:
+            grid[y][x] = 'P'
+
+    # Plot frontload method line (using 'F' markers)
+    for i, week_stat in enumerate(frontload_availability):
+        x = week_to_x(i)
+        y = percent_to_y(week_stat.percent_available)
+        if 0 <= x < plot_width and 0 <= y < plot_height:
+            # If both methods have same point, use 'B' (both)
+            if grid[y][x] == 'P':
+                grid[y][x] = 'B'
+            else:
+                grid[y][x] = 'F'
+
+    # Draw the grid with axes
+    # Top border (100%)
+    lines.append("100% │" + "─" * plot_width)
+
+    # Plot rows
+    for y in range(plot_height):
+        percent = 100 - (y / (plot_height - 1)) * 100
+        row = ''.join(grid[y])
+
+        # Add y-axis label every few rows
+        if y == 0:
+            label = "100%"
+        elif y == plot_height - 1:
+            label = "  0%"
+        elif y == plot_height // 2:
+            label = " 50%"
+        else:
+            label = "    "
+
+        lines.append(f"{label:>4} │{row}│")
+
+    # Bottom border (0%)
+    lines.append("  0% │" + "─" * plot_width)
+
+    # X-axis labels
+    x_axis = "     └"
+    week_labels = []
+
+    # Add week markers
+    if num_weeks <= 10:
+        # Show every week
+        for w in range(num_weeks):
+            x_pos = week_to_x(w)
+            week_labels.append((x_pos, f"W{w+1}"))
+    else:
+        # Show every 5th week
+        for w in range(0, num_weeks, 5):
+            x_pos = week_to_x(w)
+            week_labels.append((x_pos, f"W{w+1}"))
+
+    # Build x-axis line with labels
+    x_axis_line = [' '] * plot_width
+    for x_pos, label in week_labels:
+        if x_pos < plot_width:
+            x_axis_line[x_pos] = '┬'
+
+    lines.append("     └" + ''.join(x_axis_line) + "┘")
+
+    # Add week labels below
+    label_line = ' ' * 6
+    for x_pos, label in week_labels:
+        # Position the label centered at x_pos
+        padding = x_pos - len(label_line) + 6
+        if padding > 0:
+            label_line += ' ' * padding
+        label_line += label
+
+    lines.append(label_line)
+
+    # Legend
+    lines.append("")
+    lines.append("Legend: P = Paced method  |  F = Frontload method  |  B = Both")
+    lines.append("")
+
+    return "\n".join(lines)
 
 
 def render_statistics(stats: list, schedule: Schedule) -> str:

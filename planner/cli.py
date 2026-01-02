@@ -9,7 +9,12 @@ from typing import Optional
 
 from planner.models import Project
 from planner.scheduler import Scheduler
-from planner.visualization import render_tiles, render_statistics
+from planner.visualization import (
+    render_tiles,
+    render_statistics,
+    compute_weekly_availability,
+    render_availability_plot,
+)
 from planner.importer import (
     read_excel_projects,
     update_projects_json,
@@ -105,6 +110,14 @@ def cmd_plan(args: argparse.Namespace) -> None:
     print(f"📅 Schedule Visualization ({selected_method.upper()} method)")
     print("=" * 60)
     print(render_tiles(selected_schedule))
+    print()
+
+    # Compute weekly availability for both methods
+    paced_availability = compute_weekly_availability(schedule_paced, args.weeks)
+    frontload_availability = compute_weekly_availability(schedule_frontload, args.weeks)
+
+    # Display availability plot
+    print(render_availability_plot(paced_availability, frontload_availability))
     print()
 
     # Display statistics for both methods
