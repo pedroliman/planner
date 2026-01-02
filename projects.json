@@ -1,0 +1,37 @@
+{
+  "projects": [
+    {
+      "name": "MGS Opt",
+      "end_date": "2026-03-30",
+      "remaining_days": 28,
+      "renewal_days": 10
+    },
+    {
+      "name": "COVID",
+      "end_date": "2026-08-31",
+      "remaining_days": 23
+    },
+    {
+      "name": "HIV",
+      "end_date": "2026-07-31",
+      "remaining_days": 12,
+      "renewal_days": 18
+    },
+    {
+      "name": "CRC Unequal",
+      "end_date": "2026-03-31",
+      "remaining_days": 12,
+      "renewal_days": 18
+    },
+    {
+      "name": "Spillover",
+      "end_date": "2026-12-31",
+      "remaining_days": 5
+    },
+    {
+      "name": "OPTIC",
+      "end_date": "2026-06-30",
+      "remaining_days": 27
+    }
+  ]
+}

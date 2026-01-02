@@ -1,0 +1,12 @@
+{
+  "sheet_name": 0,
+  "header_row": 1,
+  "column_mapping": {
+    "name": "Project Name",
+    "end_date": "End Date",
+    "remaining_days": "Remaining Days",
+    "start_date": "Start Date",
+    "renewal_days": "Renewal Days"
+  },
+  "date_format": "%Y-%m-%d"
+}

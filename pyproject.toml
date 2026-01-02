@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "A minimalist project planner with GitHub-style tile visualization"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "click>=8.1.0",
+    "rich>=13.0.0",
+]
 
 [project.optional-dependencies]
 excel = ["openpyxl>=3.1.0"]

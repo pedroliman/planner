@@ -40,4 +40,4 @@ htmlcov/
 uv.lock
 
 # Project config (user-specific)
-projects.json
+# projects.json

@@ -431,24 +431,31 @@ def render_statistics(stats: list, schedule: Schedule) -> str:
     Returns:
         String representation of statistics
     """
-    lines = []
-    lines.append("=" * 60)
-    lines.append("PROJECT STATISTICS")
-    lines.append("=" * 60)
-    lines.append("")
+    from rich.console import Console
+    from rich.table import Table
+    from rich import box
+    from io import StringIO
+
+    # Create a string buffer to capture Rich output
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=True, width=80)
 
     # Key statistic: When will work run out?
     last_work_date = schedule.get_last_work_date()
     if last_work_date:
-        lines.append(f"📅 Work scheduled until: {last_work_date.strftime('%Y-%m-%d')} ({last_work_date.strftime('%A')})")
         days_of_work = (last_work_date - date.today()).days
+        console.print(f"[bold cyan]Work scheduled until:[/bold cyan] {last_work_date.strftime('%Y-%m-%d')} ({last_work_date.strftime('%A')})")
         if days_of_work > 0:
-            lines.append(f"   ({days_of_work} days of scheduled work)")
-        lines.append("")
+            console.print(f"[dim]({days_of_work} days of scheduled work)[/dim]")
+        console.print()
 
-    # Per-project statistics
-    lines.append("Days per week by project:")
-    lines.append("-" * 40)
+    # Per-project statistics table
+    table = Table(title="Project Statistics", box=box.SIMPLE)
+    table.add_column("Project", style="cyan", no_wrap=True)
+    table.add_column("Days/Week", justify="right", style="green")
+    table.add_column("Total Slots", justify="right", style="blue")
+    table.add_column("Status", justify="center", style="yellow")
+    table.add_column("Last Scheduled", style="magenta")
 
     for stat in sorted(stats, key=lambda s: s.days_per_week, reverse=True):
         project = stat.project
@@ -456,15 +463,21 @@ def render_statistics(stats: list, schedule: Schedule) -> str:
         block = f"{color}██{RESET_COLOR}"
 
         status = "✓" if stat.fully_scheduled else "○"
-        lines.append(
-            f"  {block} {project.name:<20} {stat.days_per_week:.1f} days/week  "
-            f"({stat.total_slots_assigned} slots) {status}"
+        status_text = "[green]Complete[/green]" if stat.fully_scheduled else "[yellow]Partial[/yellow]"
+
+        last_date = stat.last_scheduled_date.strftime('%Y-%m-%d') if stat.last_scheduled_date else "—"
+
+        # Use plain project name (Rich will add the color styling)
+        project_name = f"{block} {project.name}"
+
+        table.add_row(
+            project_name,
+            f"{stat.days_per_week:.1f}",
+            str(stat.total_slots_assigned),
+            status_text,
+            last_date
         )
 
-        if stat.last_scheduled_date:
-            lines.append(f"      Last scheduled: {stat.last_scheduled_date.strftime('%Y-%m-%d')}")
+    console.print(table)
 
-    lines.append("")
-    lines.append("Legend: ✓ = fully scheduled, ○ = partially scheduled")
-
-    return "\n".join(lines)
+    return buffer.getvalue()
