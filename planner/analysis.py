@@ -209,8 +209,8 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
     # Calculate dimensions for square cells
     # Each cell should be a square, so we need to calculate width and height properly
     num_weeks = len(week_starts)
-    cell_size = 16  # pixels per cell
-    gap_between_cells = 4  # spacing
+    cell_size = 24  # pixels per cell (increased from 16)
+    gap_between_cells = 2  # spacing (reduced from 4)
 
     # Add unscheduled days
     df_unscheduled = df[df['project'].isna()]
@@ -268,10 +268,14 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
                 last_label_idx = idx
 
     # Calculate proper dimensions for square cells
-    # Width and height should maintain a 1:1 aspect ratio for each cell
-    # For 52 weeks: width should be much larger than height (52 weeks vs 5 days)
-    plot_width = max(1400, num_weeks * 22)  # At least 1400px, or 22px per week
-    plot_height = 420  # Increased height for better visibility (40% more than 300px)
+    # To get perfect squares, we need to match the aspect ratio of the axes to the plot dimensions
+    # Each cell should occupy the same physical space in both x and y directions
+    cell_width_px = 26  # Physical pixels per cell in x direction
+    cell_height_px = 26  # Physical pixels per cell in y direction (same as width for squares)
+
+    # Calculate plot dimensions based on number of weeks and days
+    plot_width = max(1400, num_weeks * cell_width_px + 260)  # Extra space for margins and legend
+    plot_height = 5 * cell_height_px + 120  # 5 weekdays plus margins
 
     # Update layout with month labels and light theme
     fig.update_layout(
@@ -288,7 +292,10 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
             ticktext=list(month_positions.values()),
             tickangle=0,
             side='top',  # Month labels at top like GitHub
-            tickfont=dict(size=11, family="Inter, sans-serif", color="#6b7280")
+            tickfont=dict(size=11, family="Inter, sans-serif", color="#6b7280"),
+            scaleanchor="y",
+            scaleratio=1,
+            constrain="domain"
         ),
         yaxis=dict(
             title="",
@@ -298,7 +305,8 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
             tickvals=[0, 1, 2, 3, 4],
             ticktext=['Fri', 'Thu', 'Wed', 'Tue', 'Mon'],
             tickfont=dict(size=11, family="Inter, sans-serif", color="#6b7280"),
-            fixedrange=True  # Prevent zooming
+            fixedrange=True,  # Prevent zooming
+            constrain="domain"
         ),
         width=plot_width,
         height=plot_height,
@@ -307,14 +315,17 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
         paper_bgcolor='white',
         font=dict(family="Inter, sans-serif", color="#374151"),
         legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=-0.35,
-            xanchor="center",
-            x=0.5,
-            font=dict(size=11)
+            orientation="v",
+            yanchor="top",
+            y=1.0,
+            xanchor="left",
+            x=1.02,
+            font=dict(size=11),
+            bgcolor="rgba(255, 255, 255, 0.9)",
+            bordercolor="#e5e7eb",
+            borderwidth=1
         ),
-        margin=dict(l=60, r=40, t=60, b=120)
+        margin=dict(l=60, r=200, t=60, b=40)
     )
 
     return fig

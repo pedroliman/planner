@@ -1,8 +1,9 @@
 ---
-title: "Project Schedule"
+title: "Project Planner"
 format:
   html:
     code-fold: true
+    code-summary: "Show code"
     toc: true
     mainfont: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
     fontsize: "16px"
@@ -10,8 +11,62 @@ format:
 jupyter: python3
 ---
 
+## New Year, new planning tool
+
+As a productivity geek, I've used all kinds of planning tools. MS Project, spreadsheets, asana, etc, etc... After trying pretty much everything, I've always ended facing the same problem. For planning personal research projects, these tools just take too much work to maintain compared to the value they provide. They are just not built for the kind of work that I, and I think most researchers do.
+
+I'm not asking for much. I have a very simple use case. I have 5-10 research projects going on at any point in time, each has an end date and each has some budget (i.e., my time) on them left.
+
+I want to be able to quickly answer a few questions:
+
+1. What should I focus on this week, from a budget perspective?
+2. Do I have too muchor too little work? 
+3. When should I start a new project? 
+4. And when will I finally get to that back-burner project?
+
+My frustration with existing tools and everything I tried is it is surprisingly difficult to answer those questions. I've tried vibe-coding a web planner that would help me answer those questions, but it became too complicated. Then I tried just using a spreadsheet, but the issue is that this is a sequential planning problem and that gets easily ugly in excel. So yet again I tried, and with CLaude codes help, I actually have something I like now.
+
+## What This Tool Does
+
+This planner answers those questions by scheduling your work over the next several months under two different scheduling strategies: Spreading work evenly across projects proportionally to their budget (paced), or knocking them out one by one (frontload).
+
+## Data
+
+The planner reads from a simple JSON file listing your projects, their deadlines, and how much work remains. That's it.
+
+Each project needs an end date and an estimate of remaining days. Optionally, you can say that some projects will get "renewed". This is useful for grants that get renewed and goes for at least another year with a set budget.
+
+The json file looks like this:
+
+```json
+{
+  "projects": [
+    {
+      "name": "Project A",
+      "end_date": "2026-03-30",
+      "remaining_days": 28,
+      "renewal_days": 10
+    },
+    {
+      "name": "Project B",
+      "end_date": "2026-08-31",
+      "remaining_days": 23
+    },
+    ...
+  ]
+}
+```
+
+## Running the Scheduler:
+
+Once you have your input data, you read it in, and create a schedule based on the data, choosing one of the methods.
+
+The paced approach spreads work across all active projects, making steady progress on everything simultaneously. This is usually how researchers do their work. It prioritizes projects by deadline (earliest due date first) but tries to make sure all project gets worked on every two weeks. 
+
+The frontload approach completes projects one at a time in deadline order. The point of this method is to just provide a bounding case, and gives a better sence of priority, and when exactly I'd need more work if I was trying to knock everything out as soon as possible. Let's run both approaches and compare them:
+
 ```{python}
-#| echo: false
+#| echo: true
 #| message: false
 #| warning: false
 
@@ -46,39 +101,16 @@ paced_availability = compute_weekly_availability(schedule_paced, NUM_WEEKS)
 frontload_availability = compute_weekly_availability(schedule_frontload, NUM_WEEKS)
 ```
 
-## Overview
 
-Planning **`{python} len(projects)` projects** over a **`{python} NUM_WEEKS`-week** horizon.
+# Paced Schedule
 
-### Project Summary
+The paced schedule looks pretty realistic to me, and makes quite bit of sense. I iterated a bit to get it to work this way.
 
-```{python}
-#| echo: false
 
-# Create project summary table
-project_data = []
-for project in projects:
-    project_data.append({
-        "Project": project.name,
-        "End Date": project.end_date.strftime("%Y-%m-%d"),
-        "Remaining Days": f"{project.remaining_days:.1f}",
-        "Renewal Days": f"{project.renewal_days:.1f}" if project.renewal_days else "—"
-    })
-
-df_projects = pd.DataFrame(project_data)
-df_projects.style.hide(axis="index")
-```
-
-## Paced Method Schedule
-
-Balances work across all projects using weekly allocation limits. Each project is assigned no more than floor(ideal_days_per_week) days per week, with fractional accumulation for precise pacing.
-
-### Calendar View
 
 ```{python}
-#| echo: false
 #| label: fig-paced-calendar
-#| fig-cap: "Paced method calendar heatmap showing project assignments"
+#| fig-cap: "Paced scheduling: balanced progress across all projects"
 #| column: page
 
 fig_paced_cal = create_calendar_heatmap(schedule_paced, "Paced Method Calendar")
@@ -86,38 +118,13 @@ if fig_paced_cal:
     fig_paced_cal.show()
 ```
 
-### Statistics
+### Frontloaded Schedule
+
+The Frontloaded schedule looks as you'd expect.
 
 ```{python}
-#| echo: false
-
-# Create statistics table for paced method
-stat_data_paced = []
-for stat in sorted(stats_paced, key=lambda s: s.days_per_week, reverse=True):
-    stat_data_paced.append({
-        "Project": stat.project.name,
-        "Days/Week": f"{stat.days_per_week:.1f}",
-        "Total Slots": stat.total_slots_assigned,
-        "Status": "Complete" if stat.fully_scheduled else "Partial",
-        "Last Scheduled": stat.last_scheduled_date.strftime('%Y-%m-%d') if stat.last_scheduled_date else "—"
-    })
-
-df_stats_paced = pd.DataFrame(stat_data_paced)
-df_stats_paced.style.hide(axis="index")
-```
-
-**Work scheduled until:** `{python} schedule_paced.get_last_work_date().strftime('%Y-%m-%d (%A)') if schedule_paced.get_last_work_date() else 'N/A'`
-
-## Frontload Method Schedule
-
-Concentrates work by completing projects sequentially in EDD order. Minimizes context switching and focuses on one project at a time.
-
-### Calendar View
-
-```{python}
-#| echo: false
 #| label: fig-frontload-calendar
-#| fig-cap: "Frontload method calendar heatmap showing project assignments"
+#| fig-cap: "Frontload scheduling: complete projects sequentially"
 #| column: page
 
 fig_frontload_cal = create_calendar_heatmap(schedule_frontload, "Frontload Method Calendar")
@@ -125,48 +132,28 @@ if fig_frontload_cal:
     fig_frontload_cal.show()
 ```
 
-### Statistics
+
+## When should I start new projects?
+
+Plott
+
+The availability chart answers this directly. If you see weeks at 0% availability stretching far into the future, you're overcommitted. If you see 50%+ availability throughout, you can comfortably take on more.
+
+The difference between the two methods shows you the cost of context switching. Paced scheduling typically shows lower availability because it maintains multiple active projects simultaneously.
 
 ```{python}
-#| echo: false
-
-# Create statistics table for frontload method
-stat_data_frontload = []
-for stat in sorted(stats_frontload, key=lambda s: s.days_per_week, reverse=True):
-    stat_data_frontload.append({
-        "Project": stat.project.name,
-        "Days/Week": f"{stat.days_per_week:.1f}",
-        "Total Slots": stat.total_slots_assigned,
-        "Status": "Complete" if stat.fully_scheduled else "Partial",
-        "Last Scheduled": stat.last_scheduled_date.strftime('%Y-%m-%d') if stat.last_scheduled_date else "—"
-    })
-
-df_stats_frontload = pd.DataFrame(stat_data_frontload)
-df_stats_frontload.style.hide(axis="index")
-```
-
-**Work scheduled until:** `{python} schedule_frontload.get_last_work_date().strftime('%Y-%m-%d (%A)') if schedule_frontload.get_last_work_date() else 'N/A'`
-
-## Availability Analysis
-
-### Weekly Availability Comparison
-
-```{python}
-#| echo: false
 #| label: fig-availability
-#| fig-cap: "Weekly availability percentage over time for both scheduling methods"
+#| fig-cap: "Weekly availability: how much capacity remains each week"
 #| column: page
 
 fig = create_availability_plot(paced_availability, frontload_availability)
 fig.show()
 ```
 
-### Key Insights
-
 ```{python}
 #| echo: false
 
-# Calculate some insights
+# Calculate insights
 paced_percents = [w['percent_available'] for w in paced_availability]
 frontload_percents = [w['percent_available'] for w in frontload_availability]
 
@@ -176,3 +163,5 @@ frontload_avg = sum(frontload_percents) / len(frontload_percents) if frontload_p
 print(f"**Paced Method:** Average availability = {paced_avg:.1f}%")
 print(f"**Frontload Method:** Average availability = {frontload_avg:.1f}%")
 ```
+
+Look at the next 4-8 weeks to see when you can realistically start new work. If both methods show you're fully booked through that period, you'll need to defer new commitments or renegotiate existing deadlines.
