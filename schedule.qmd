@@ -3,8 +3,10 @@ title: "Project Schedule"
 format:
   html:
     code-fold: true
-    #theme: darkly
     toc: true
+    mainfont: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+    fontsize: "16px"
+    css: custom.css
 jupyter: python3
 ---
 
@@ -77,6 +79,7 @@ Balances work across all projects using weekly allocation limits. Each project i
 #| echo: false
 #| label: fig-paced-calendar
 #| fig-cap: "Paced method calendar heatmap showing project assignments"
+#| column: page
 
 fig_paced_cal = create_calendar_heatmap(schedule_paced, "Paced Method Calendar")
 if fig_paced_cal:
@@ -115,6 +118,7 @@ Concentrates work by completing projects sequentially in EDD order. Minimizes co
 #| echo: false
 #| label: fig-frontload-calendar
 #| fig-cap: "Frontload method calendar heatmap showing project assignments"
+#| column: page
 
 fig_frontload_cal = create_calendar_heatmap(schedule_frontload, "Frontload Method Calendar")
 if fig_frontload_cal:
@@ -151,6 +155,7 @@ df_stats_frontload.style.hide(axis="index")
 #| echo: false
 #| label: fig-availability
 #| fig-cap: "Weekly availability percentage over time for both scheduling methods"
+#| column: page
 
 fig = create_availability_plot(paced_availability, frontload_availability)
 fig.show()

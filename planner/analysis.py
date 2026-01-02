@@ -141,14 +141,20 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
     project_names = sorted(list(all_projects))
     project_to_num = {name: i for i, name in enumerate(project_names)}
 
-    # Color mapping using a generated color palette based on number of projects
-    num_projects = max(len(project_names), 1)
-    color_scale = px.colors.qualitative.Alphabet if num_projects <= len(px.colors.qualitative.Alphabet) else px.colors.qualitative.Light24
-    if num_projects > len(color_scale):
-        # Fallback to a continuous colorscale and sample distinct colors
-        base_scale = px.colors.sequential.Viridis
-        color_scale = [base_scale[int(i * (len(base_scale) - 1) / (num_projects - 1))] for i in range(num_projects)]
-    colors = color_scale[:num_projects]
+    # Modern, vibrant color palette for light theme
+    modern_colors = [
+        '#10b981',  # emerald
+        '#3b82f6',  # blue
+        '#8b5cf6',  # purple
+        '#f59e0b',  # amber
+        '#ef4444',  # red
+        '#06b6d4',  # cyan
+        '#ec4899',  # pink
+        '#14b8a6',  # teal
+        '#f97316',  # orange
+        '#6366f1',  # indigo
+    ]
+    colors = [modern_colors[i % len(modern_colors)] for i in range(len(project_names))]
 
     # Build data for plotly
     dates = sorted(schedule.get_unique_dates())
@@ -200,6 +206,12 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
     # Create figure
     fig = go.Figure()
 
+    # Calculate dimensions for square cells
+    # Each cell should be a square, so we need to calculate width and height properly
+    num_weeks = len(week_starts)
+    cell_size = 16  # pixels per cell
+    gap_between_cells = 4  # spacing
+
     # Add unscheduled days
     df_unscheduled = df[df['project'].isna()]
     if not df_unscheduled.empty:
@@ -208,10 +220,10 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
             y=df_unscheduled['y'],
             mode='markers',
             marker=dict(
-                size=15,
-                color='#1e293b',
+                size=cell_size,
+                color='#e5e7eb',  # Light gray for unscheduled
                 symbol='square',
-                line=dict(color='#334155', width=1)
+                line=dict(color='#d1d5db', width=1)
             ),
             text=df_unscheduled['hover_text'],
             hovertemplate='%{text}<extra></extra>',
@@ -228,9 +240,10 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
                 y=df_proj['y'],
                 mode='markers',
                 marker=dict(
-                    size=15,
+                    size=cell_size,
                     color=colors[i % len(colors)],
                     symbol='square',
+                    line=dict(color='white', width=2)  # White border for separation
                 ),
                 text=df_proj['hover_text'],
                 hovertemplate='%{text}<extra></extra>',
@@ -242,15 +255,30 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
     # Find the start of each month in the date range
     month_positions = {}
     current_month = None
+    last_label_idx = -999  # Track last label position to avoid overlap
+    min_gap = 3  # Minimum weeks between labels to prevent overlap
+
     for idx, week_start in enumerate(week_starts):
         month_key = (week_start.year, week_start.month)
         if month_key != current_month:
             current_month = month_key
-            month_positions[idx] = week_start.strftime('%b %Y')
+            # Only add label if it's far enough from the last one
+            if idx - last_label_idx >= min_gap:
+                month_positions[idx] = week_start.strftime('%b %Y')
+                last_label_idx = idx
 
-    # Update layout with month labels
+    # Calculate proper dimensions for square cells
+    # Width and height should maintain a 1:1 aspect ratio for each cell
+    # For 52 weeks: width should be much larger than height (52 weeks vs 5 days)
+    plot_width = max(1400, num_weeks * 22)  # At least 1400px, or 22px per week
+    plot_height = 420  # Increased height for better visibility (40% more than 300px)
+
+    # Update layout with month labels and light theme
     fig.update_layout(
-        title=title,
+        title=dict(
+            text=title,
+            font=dict(size=20, family="Inter, sans-serif", color="#111827")
+        ),
         xaxis=dict(
             title="",
             showgrid=False,
@@ -258,7 +286,9 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
             tickmode='array',
             tickvals=list(month_positions.keys()),
             ticktext=list(month_positions.values()),
-            tickangle=0
+            tickangle=0,
+            side='top',  # Month labels at top like GitHub
+            tickfont=dict(size=11, family="Inter, sans-serif", color="#6b7280")
         ),
         yaxis=dict(
             title="",
@@ -266,13 +296,25 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
             zeroline=False,
             tickmode='array',
             tickvals=[0, 1, 2, 3, 4],
-            ticktext=['Fri', 'Thu', 'Wed', 'Tue', 'Mon']
+            ticktext=['Fri', 'Thu', 'Wed', 'Tue', 'Mon'],
+            tickfont=dict(size=11, family="Inter, sans-serif", color="#6b7280"),
+            fixedrange=True  # Prevent zooming
         ),
-        height=300,
+        width=plot_width,
+        height=plot_height,
         hovermode='closest',
-        plot_bgcolor='#0f172a',
-        paper_bgcolor='#0f172a',
-        font=dict(color='#e2e8f0')
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        font=dict(family="Inter, sans-serif", color="#374151"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.35,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=11)
+        ),
+        margin=dict(l=60, r=40, t=60, b=120)
     )
 
     return fig
@@ -282,7 +324,7 @@ def create_availability_plot(
     paced_availability: list[dict],
     frontload_availability: list[dict]
 ) -> go.Figure:
-    """Create weekly availability comparison plot.
+    """Create weekly availability comparison plot with smoothing.
 
     Args:
         paced_availability: Weekly availability stats for paced method
@@ -293,31 +335,37 @@ def create_availability_plot(
     """
     fig = go.Figure()
 
-    # Paced method
+    # Paced method - calculate smoothed values with 3-week moving average
     paced_dates = [w['start_date'] for w in paced_availability]
     paced_percents = [w['percent_available'] for w in paced_availability]
 
+    # Create pandas series for smoothing
+    paced_series = pd.Series(paced_percents)
+    paced_smoothed = paced_series.rolling(window=3, center=True, min_periods=1).mean().tolist()
+
     fig.add_trace(go.Scatter(
         x=paced_dates,
-        y=paced_percents,
-        mode='lines+markers',
+        y=paced_smoothed,
+        mode='lines',
         name='Paced Method',
-        line=dict(color='#60a5fa', width=2),
-        marker=dict(size=6),
+        line=dict(color='#3b82f6', width=3, shape='spline', smoothing=1.0),  # Modern blue with spline smoothing
         hovertemplate='%{x|%b %d, %Y}<br>Available: %{y:.1f}%<extra></extra>'
     ))
 
-    # Frontload method
+    # Frontload method - calculate smoothed values with 3-week moving average
     frontload_dates = [w['start_date'] for w in frontload_availability]
     frontload_percents = [w['percent_available'] for w in frontload_availability]
 
+    # Create pandas series for smoothing
+    frontload_series = pd.Series(frontload_percents)
+    frontload_smoothed = frontload_series.rolling(window=3, center=True, min_periods=1).mean().tolist()
+
     fig.add_trace(go.Scatter(
         x=frontload_dates,
-        y=frontload_percents,
-        mode='lines+markers',
+        y=frontload_smoothed,
+        mode='lines',
         name='Frontload Method',
-        line=dict(color='#fbbf24', width=2),
-        marker=dict(size=6),
+        line=dict(color='#f59e0b', width=3, shape='spline', smoothing=1.0),  # Modern amber with spline smoothing
         hovertemplate='%{x|%b %d, %Y}<br>Available: %{y:.1f}%<extra></extra>'
     ))
 
@@ -337,25 +385,46 @@ def create_availability_plot(
             x=boundary,
             line_width=1,
             line_dash="dash",
-            line_color="#334155",
-            opacity=0.5
+            line_color="#d1d5db",
+            opacity=0.6
         )
 
     fig.update_layout(
-        title="Weekly Availability Percentage",
+        title=dict(
+            text="Weekly Availability Percentage",
+            font=dict(size=20, family="Inter, sans-serif", color="#111827")
+        ),
         xaxis_title="",
         yaxis_title="Availability (%)",
         hovermode='x unified',
-        height=500,
-        plot_bgcolor='#0f172a',
-        paper_bgcolor='#0f172a',
-        font=dict(color='#e2e8f0'),
-        yaxis=dict(range=[0, 100]),
+        width=1400,
+        height=450,
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        font=dict(family="Inter, sans-serif", color="#374151"),
+        yaxis=dict(
+            range=[0, 100],
+            gridcolor='#f3f4f6',
+            showgrid=True,
+            tickfont=dict(size=12, color="#6b7280")
+        ),
         xaxis=dict(
             tickformat='%b\n%Y',
             dtick='M1',  # Monthly ticks
-            ticklabelmode='period'
-        )
+            ticklabelmode='period',
+            gridcolor='#f3f4f6',
+            showgrid=True,
+            tickfont=dict(size=12, color="#6b7280")
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.2,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=12)
+        ),
+        margin=dict(l=60, r=40, t=80, b=80)
     )
 
     return fig
