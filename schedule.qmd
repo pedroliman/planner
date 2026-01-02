@@ -20,11 +20,11 @@ I'm not asking for much. I have a very simple use case. I have 5-10 research pro
 I want to be able to quickly answer a few questions:
 
 1. What should I focus on this week, from a budget perspective?
-2. Do I have too muchor too little work? 
+2. Do I have too much or too little work? 
 3. When should I start a new project? 
 4. And when will I finally get to that back-burner project?
 
-My frustration with existing tools and everything I tried is it is surprisingly difficult to answer those questions. I've tried vibe-coding a web planner that would help me answer those questions, but it became too complicated. Then I tried just using a spreadsheet, but the issue is that this is a sequential planning problem and that gets easily ugly in excel. So yet again I tried, and with CLaude codes help, I actually have something I like now.
+My frustration with existing tools and everything I tried is it is surprisingly difficult to answer those questions. I've tried vibe-coding a web planner that would help me answer those questions, but it became too complicated. Then I tried just using a spreadsheet, but the issue is that this is a sequential planning problem and that gets easily ugly in excel. So yet again I tried, and with Claude codes help, I actually have something I like now.
 
 ## What This Tool Does
 
@@ -63,7 +63,11 @@ Once you have your input data, you read it in, and create a schedule based on th
 
 The paced approach spreads work across all active projects, making steady progress on everything simultaneously. This is usually how researchers do their work. It prioritizes projects by deadline (earliest due date first) but tries to make sure all project gets worked on every two weeks. 
 
-The frontload approach completes projects one at a time in deadline order. The point of this method is to just provide a bounding case, and gives a better sence of priority, and when exactly I'd need more work if I was trying to knock everything out as soon as possible. Let's run both approaches and compare them:
+The frontload approach completes projects one at a time in deadline order. The point of this method is to just provide a bounding case, and gives a better sence of priority, and when exactly I'd need more work if I was trying to knock everything out as soon as possible.
+
+Both approaches assigna full day of work for each project - which I'm happy to do as a simplifying assumption.
+
+Let's run both approaches and compare them:
 
 ```{python}
 #| echo: true
@@ -104,9 +108,11 @@ frontload_availability = compute_weekly_availability(schedule_frontload, NUM_WEE
 
 # Paced Schedule
 
-The paced schedule looks pretty realistic to me, and makes quite bit of sense. I iterated a bit to get it to work this way.
+The paced schedule looks pretty realistic to me, and makes sense. I iterated a bit to get it to work the way I wanted.
 
+Briefly, this scheduling algorithm builds a schedule by assigning days to projects based on a target “ideal days per week” computed from each project’s remaining work divided by time until its deadline. Each project has a weekly cap set to the floor of that ideal, with fractional leftovers accumulating - this effectively assings a day to a project only when I can actually work a full day on it. Fair. Among projects still under their weekly cap, we prioritize projects with earlier deadlines. Weekly tallies reset every Monday, weekends are skipped, and days can remain unassigned if no project is eligible.
 
+For my projects, it works out this way:
 
 ```{python}
 #| label: fig-paced-calendar
@@ -117,6 +123,10 @@ fig_paced_cal = create_calendar_heatmap(schedule_paced, "Paced Method Calendar")
 if fig_paced_cal:
     fig_paced_cal.show()
 ```
+
+This is quite realistic and useful.
+
+This schedule pushes one of the projects I was working on to April. Interestingly, before running this, I was hoping I was going to be able to work on that sooner, but apparently not. Either way, that's useful information.
 
 ### Frontloaded Schedule
 
@@ -132,14 +142,10 @@ if fig_frontload_cal:
     fig_frontload_cal.show()
 ```
 
+## When should I start a new project?
 
-## When should I start new projects?
+I can already look at the paced schedule and see that I will have about a day a week or two of availability only in July. But to see that more clearly, let's see that in a plot.
 
-Plott
-
-The availability chart answers this directly. If you see weeks at 0% availability stretching far into the future, you're overcommitted. If you see 50%+ availability throughout, you can comfortably take on more.
-
-The difference between the two methods shows you the cost of context switching. Paced scheduling typically shows lower availability because it maintains multiple active projects simultaneously.
 
 ```{python}
 #| label: fig-availability
@@ -150,18 +156,15 @@ fig = create_availability_plot(paced_availability, frontload_availability)
 fig.show()
 ```
 
-```{python}
-#| echo: false
+## Final thoughts.
 
-# Calculate insights
-paced_percents = [w['percent_available'] for w in paced_availability]
-frontload_percents = [w['percent_available'] for w in frontload_availability]
+Okay, so after doing this, I'm feeling pretty good about this year. I have quite a bit ahead of me until July, so I should start planning for that. Looking at the questions I wanted to answer, I think I got answers:
 
-paced_avg = sum(paced_percents) / len(paced_percents) if paced_percents else 0
-frontload_avg = sum(frontload_percents) / len(frontload_percents) if frontload_percents else 0
+1. What should I focus on this week, from a budget perspective? *the paced schedule answers this*
+2. Do I have too muchor too little work? *I have quite a bit already*
+3. When should I start a new project? *Looks like I can't do anything new until June/July*
+4. And when will I finally get to that back-burner project? Looks like it's April.
 
-print(f"**Paced Method:** Average availability = {paced_avg:.1f}%")
-print(f"**Frontload Method:** Average availability = {frontload_avg:.1f}%")
-```
+## How to use this:
 
-Look at the next 4-8 weeks to see when you can realistically start new work. If both methods show you're fully booked through that period, you'll need to defer new commitments or renegotiate existing deadlines.
+You will need a little familiarity with python to use this. Let me know if this seems useful. I'd hope project management tools would implement something like this. Clone my repo, `uv sync` and run it.
