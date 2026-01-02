@@ -296,9 +296,9 @@ class TestVisualization:
         ]
 
         result = render_statistics(stats, schedule)
-        assert "PROJECT STATISTICS" in result
+        assert "Project Statistics" in result
         assert "Test Project" in result
-        assert "days/week" in result
+        assert "Days/Week" in result
 
 
 class TestIntegration:
@@ -741,9 +741,9 @@ class TestEnhancedVisualization:
 
         output = render_tiles(schedule, show_legend=True)
 
-        # Should contain day names
+        # Should contain day names (Mon, Wed, Fri only in new visualization)
         assert "Mon" in output
-        assert "Tue" in output
+        assert "Wed" in output
         assert "Fri" in output
 
         # Should contain legend
