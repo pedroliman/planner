@@ -37,6 +37,12 @@
       "name": "Props",
       "end_date": "2026-06-30",
       "remaining_days": 10
+    },
+    {
+      "name": "Leave",
+      "start_date": "2026-10-01",
+      "end_date": "2026-12-31",
+      "remaining_days": 50
     }
   ]
 }

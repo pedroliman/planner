@@ -317,6 +317,10 @@ class Scheduler:
             if remaining <= 0:
                 continue
 
+            # Skip projects that haven't started yet
+            if project.start_date is not None and current_date < project.start_date:
+                continue
+
             # Calculate remaining weeks for this project
             days_until_deadline = (project.end_date - current_date).days
             remaining_weeks = max(days_until_deadline / 7.0, 0.1)  # Avoid division by zero
@@ -391,7 +395,6 @@ class Scheduler:
 
         # Generate slots for each day
         num_days = num_weeks * 7
-        current_project_idx = 0
 
         for day_offset in range(num_days):
             current_date = self.start_date + timedelta(days=day_offset)
@@ -403,16 +406,17 @@ class Scheduler:
             # Create one slot per day
             slot = ScheduledSlot(date=current_date)
 
-            # Find the next project with remaining work
+            # Find the first project in EDD order that:
+            # 1. Has remaining work
+            # 2. Has started (current_date >= start_date)
             project = None
-            while current_project_idx < len(sorted_projects):
-                candidate = sorted_projects[current_project_idx]
+            for candidate in sorted_projects:
                 if remaining_work[candidate] > 0:
+                    # Check if project has started
+                    if candidate.start_date is not None and current_date < candidate.start_date:
+                        continue
                     project = candidate
                     break
-                else:
-                    # Move to next project when current one is done
-                    current_project_idx += 1
 
             if project:
                 slot.project = project

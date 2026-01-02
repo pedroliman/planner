@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Optional
 
@@ -34,7 +34,8 @@ def load_projects(config_path: str) -> list[Project]:
     for i, p in enumerate(data.get("projects", [])):
         end_date = datetime.strptime(p["end_date"], "%Y-%m-%d").date()
 
-        start_date = None
+        # Default to yesterday if start_date not provided
+        start_date = date.today() - timedelta(days=1)
         if "start_date" in p and p["start_date"]:
             start_date = datetime.strptime(p["start_date"], "%Y-%m-%d").date()
 
@@ -53,6 +54,46 @@ def load_projects(config_path: str) -> list[Project]:
         projects.append(project)
 
     return projects
+
+
+def compute_monthly_unassigned_days(schedule: Schedule) -> pd.DataFrame:
+    """Compute the number of unassigned days per month.
+
+    Args:
+        schedule: Schedule object to analyze
+
+    Returns:
+        DataFrame with columns: year, month, month_name, unassigned_days
+        Only includes months that have at least one unassigned day
+    """
+    if not schedule.slots:
+        return pd.DataFrame(columns=['year', 'month', 'month_name', 'unassigned_days'])
+
+    # Count unassigned days per month
+    monthly_counts = {}
+
+    for slot in schedule.slots:
+        # Only count weekdays (weekends are already excluded from slots)
+        if slot.project is None:
+            month_key = (slot.date.year, slot.date.month)
+            if month_key not in monthly_counts:
+                monthly_counts[month_key] = 0
+            monthly_counts[month_key] += 1
+
+    # Convert to DataFrame
+    data = []
+    for (year, month), count in sorted(monthly_counts.items()):
+        # Only include months with at least one unassigned day
+        if count > 0:
+            month_name = datetime(year, month, 1).strftime('%B %Y')
+            data.append({
+                'year': year,
+                'month': month,
+                'month_name': month_name,
+                'unassigned_days': count
+            })
+
+    return pd.DataFrame(data)
 
 
 def compute_weekly_availability(schedule: Schedule, num_weeks: int) -> list[dict]:

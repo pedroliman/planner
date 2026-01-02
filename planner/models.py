@@ -1,7 +1,7 @@
 """Data models for the project planner."""
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 
@@ -46,8 +46,6 @@ class Project:
     def __post_init__(self):
         if self.color is None:
             self.color = DEFAULT_COLORS[self._color_index % len(DEFAULT_COLORS)]
-        if self.start_date is None:
-            self.start_date = date.today()
 
     @property
     def slots_remaining(self) -> int:
