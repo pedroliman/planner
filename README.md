@@ -4,20 +4,31 @@ A minimalist project planner with GitHub-style tile visualization.
 
 ## Features
 
-- **Two scheduling methods**:
-  - **Paced** (default): Balances work across projects with proportional allocation and a two-week rule
-  - **Frontload**: Concentrates work by completing projects sequentially
-- **GitHub-style visualization**: See your schedule as a color-coded tile grid
-- **Smart allocation**: Projects with more remaining work get proportionally more time (paced mode)
+- **Two intelligent scheduling methods**:
+  - **Paced** (default): Balances work with EDD priority, continuity, proportional allocation, and two-week rule
+  - **Frontload**: Completes projects sequentially in earliest-due-date order
+- **EDD prioritization**: Projects with earlier deadlines get scheduled first
+- **Continuity optimization**: Minimizes fragmentation by grouping 2-6 consecutive slots (1-3 days) on same project
+- **Project renewals**: Auto-generate renewal projects with configurable work allocation
+- **Excel import**: Import and update projects from spreadsheets with flexible column mapping
+- **Enhanced visualization**: Color-coded tiles (in terminal) with month labels and intelligent spacing
+- **52-week planning**: Full year planning horizon by default
+- **Smart allocation**: Projects with more remaining work get proportionally more time
 - **Half-day support**: Schedule 4-hour slots for smaller projects
 - **Statistics comparison**: Compare both scheduling methods side-by-side
 - **Key insights**: Know when you'll run out of work and how many days per week per project
 
+**Note**: The visualization uses ANSI color codes for beautiful colored output in your terminal. Colors won't display in this README, but you'll see them when you run the tool!
+
 ## Installation
 
 ```bash
-# Using uv
+# Core installation (zero dependencies)
 uv sync
+
+# With Excel import support (optional)
+uv pip install openpyxl
+# OR: uv sync --extra excel
 ```
 
 ## Quick Start
@@ -34,7 +45,9 @@ uv run planner init
     {
       "name": "Project Alpha",
       "end_date": "2024-12-31",
-      "remaining_days": 15
+      "remaining_days": 15,
+      "start_date": "2024-01-01",
+      "renewal_days": 5
     },
     {
       "name": "Project Beta",
@@ -45,6 +58,10 @@ uv run planner init
 }
 ```
 
+**Optional fields**:
+- `start_date`: When project starts (defaults to today)
+- `renewal_days`: Auto-create renewal project with this many days after completion
+
 3. Generate and view your schedule:
 ```bash
 uv run planner plan
@@ -54,19 +71,25 @@ uv run planner plan
 
 ### Commands
 
-- `planner plan` - Generate and display the project schedule
 - `planner init` - Create a sample configuration file
+- `planner plan` - Generate and display the project schedule
+- `planner import <file.xlsx>` - Import or update projects from Excel file
+- `planner init-import-config` - Create sample import configuration
 
 ### Options
 
+**Plan command**:
 - `-c, --config` - Path to configuration file (default: `projects.json`)
-- `-w, --weeks` - Number of weeks to plan ahead (default: 12)
+- `-w, --weeks` - Number of weeks to plan ahead (default: 52)
 - `-m, --method` - Scheduling method: `paced` (default, balanced) or `frontload` (concentrated)
+
+**Import command**:
+- `--import-config` - Path to import configuration file (default: `import_config.json`)
 
 ### Examples
 
 ```bash
-# Use default paced method
+# Use default paced method (52 weeks)
 uv run planner plan
 
 # Use frontload method
@@ -74,6 +97,13 @@ uv run planner plan --method frontload
 
 # Plan 24 weeks with paced method
 uv run planner plan -w 24
+
+# Import projects from Excel
+uv run planner init-import-config  # Create config template
+uv run planner import projects.xlsx
+
+# Import with custom config
+uv run planner import data.xlsx --import-config custom.json
 ```
 
 ### Example Output
@@ -116,24 +146,29 @@ The planner supports two scheduling approaches:
 
 ### Paced Method (Default)
 
-The paced method balances work across all projects:
+The paced method balances work across all projects with intelligent prioritization:
 
-1. **Proportional allocation**: Projects with more remaining days get more slots
-2. **Two-week rule**: Each project must be worked on at least once every 2 weeks
-3. **Urgency-based priority**: Projects that haven't been worked on recently get higher priority
-4. **Even distribution**: Work is spread across the planning period
+1. **Continuity**: Groups consecutive work on same project (2-6 slots) to minimize fragmentation
+2. **EDD priority**: Projects with earlier deadlines scheduled first
+3. **Two-week rule**: Each project must be worked on at least once every 2 weeks
+4. **Proportional allocation**: Projects with more remaining days get more slots
+5. **Urgency-based priority**: Projects that haven't been worked on recently get higher priority
+6. **Even distribution**: Work is spread across the planning period
 
-Use this when you want to maintain momentum on all projects simultaneously.
+**Priority order**: Continuity > 2-week urgency > EDD + proportionality + recency
+
+Use this when you want to maintain momentum on all projects while making meaningful progress on each.
 
 ### Frontload Method
 
-The frontload method concentrates work on one project at a time:
+The frontload method concentrates work on one project at a time in deadline order:
 
-1. **Sequential completion**: Finish projects one at a time (ordered by remaining work)
-2. **Maximum focus**: Dedicate all available time to the current project
-3. **Clear progression**: See projects complete fully before starting the next
+1. **EDD ordering**: Finish projects in earliest-due-date order
+2. **Sequential completion**: Complete each project fully before starting the next
+3. **Maximum focus**: Dedicate all available time to the current project
+4. **Clear progression**: See projects complete fully in deadline order
 
-Use this when you want to minimize context switching and complete projects faster.
+Use this when you want to minimize context switching and meet deadlines systematically.
 
 ### Common Rules (Both Methods)
 
@@ -157,11 +192,13 @@ planner/
 │   ├── __init__.py
 │   ├── cli.py          # Command-line interface
 │   ├── models.py       # Data models (Project, Schedule, etc.)
-│   ├── scheduler.py    # Scheduling algorithm
-│   └── visualization.py # Tile rendering and statistics
+│   ├── scheduler.py    # Scheduling algorithm with EDD and continuity
+│   ├── visualization.py # Enhanced tile rendering with month labels
+│   └── importer.py     # Excel import with column mapping
 ├── tests/
-│   └── test_planner.py
+│   └── test_planner.py # 55 comprehensive tests
 ├── pyproject.toml
+├── CLAUDE.md          # Development guide
 └── README.md
 ```
 

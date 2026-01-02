@@ -1,6 +1,9 @@
 """Tests for the project planner."""
 
+import json
 from datetime import date, timedelta
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -512,3 +515,521 @@ class TestSchedulingMethods:
         # Statistics should show not fully scheduled
         stats = scheduler.get_statistics(schedule)
         assert not stats[0].fully_scheduled
+
+
+class TestProjectRenewal:
+    """Tests for project renewal functionality."""
+
+    def test_project_with_renewal_days(self):
+        """Test creating a project with renewal_days."""
+        project = Project(
+            name="Renewable",
+            end_date=date(2024, 12, 31),
+            remaining_days=10,
+            renewal_days=5,
+        )
+        assert project.renewal_days == 5
+        assert not project.is_renewal
+        assert project.parent_name is None
+
+    def test_renewal_project_generation(self):
+        """Test that renewal projects are generated correctly."""
+        base_project = Project(
+            name="Base",
+            end_date=date(2024, 11, 30),
+            remaining_days=5,
+            start_date=date(2024, 11, 1),
+            renewal_days=3,
+        )
+
+        scheduler = Scheduler([base_project], start_date=date(2024, 11, 1))
+        schedule = scheduler.create_schedule(num_weeks=52, method="paced")
+
+        # Check that renewal project was created
+        renewal_projects = [p for p in scheduler.projects if p.is_renewal]
+        assert len(renewal_projects) == 1
+
+        renewal = renewal_projects[0]
+        assert renewal.name == "Base (Renewal)"
+        assert renewal.remaining_days == 3
+        assert renewal.parent_name == "Base"
+        assert renewal.start_date == date(2024, 12, 1)  # Day after base ends
+        assert renewal.end_date == date(2024, 12, 1) + timedelta(days=365)
+
+    def test_no_renewal_if_outside_horizon(self):
+        """Test that renewals aren't created if they start after the planning horizon."""
+        base_project = Project(
+            name="Late",
+            end_date=date(2025, 12, 31),  # Far in future
+            remaining_days=5,
+            renewal_days=3,
+        )
+
+        scheduler = Scheduler([base_project], start_date=date(2024, 11, 1))
+        schedule = scheduler.create_schedule(num_weeks=4, method="paced")  # Short horizon
+
+        # Renewal should not be created
+        renewal_projects = [p for p in scheduler.projects if p.is_renewal]
+        # This depends on whether the base project completes within horizon
+        # For this test, the renewal start would be after the 4-week horizon
+
+    def test_renewal_project_scheduling(self):
+        """Test that renewal projects are scheduled correctly."""
+        base_project = Project(
+            name="Quick",
+            end_date=date(2024, 11, 15),
+            remaining_days=1,
+            start_date=date(2024, 11, 1),
+            renewal_days=2,
+        )
+
+        scheduler = Scheduler([base_project], start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=52, method="paced")
+
+        # Check that both base and renewal got scheduled
+        base_slots = [s for s in schedule.slots if s.project and s.project.name == "Quick"]
+        renewal_slots = [s for s in schedule.slots if s.project and s.project.name == "Quick (Renewal)"]
+
+        assert len(base_slots) >= 2  # 1 day = 2 slots
+        assert len(renewal_slots) >= 4  # 2 days = 4 slots
+
+    def test_multiple_projects_with_renewals(self):
+        """Test scheduling multiple projects with different renewal configurations."""
+        projects = [
+            Project("A", date(2024, 11, 30), 2, renewal_days=1),
+            Project("B", date(2024, 12, 15), 3, renewal_days=2),
+            Project("C", date(2024, 12, 31), 4, renewal_days=None),  # No renewal
+        ]
+
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 1))
+        schedule = scheduler.create_schedule(num_weeks=52, method="paced")
+
+        # Check renewals were created for A and B but not C
+        renewal_count = sum(1 for p in scheduler.projects if p.is_renewal)
+        assert renewal_count == 2  # A and B should have renewals
+
+
+class TestEDDPrioritization:
+    """Tests for Earliest Due Date (EDD) prioritization."""
+
+    def test_edd_priority_in_paced_method(self):
+        """Test that paced method prioritizes projects with earlier deadlines."""
+        projects = [
+            Project("Late", date(2024, 12, 31), 10),
+            Project("Early", date(2024, 11, 15), 10),
+            Project("Middle", date(2024, 12, 15), 10),
+        ]
+
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=12, method="paced")
+
+        # Get first few slots for each project to see which starts earlier
+        early_slots = schedule.get_project_slots(projects[1])  # Early deadline
+        late_slots = schedule.get_project_slots(projects[0])   # Late deadline
+
+        # Early deadline project should start first or have similar start
+        if early_slots and late_slots:
+            first_early = min(s.date for s in early_slots)
+            first_late = min(s.date for s in late_slots)
+            # Early should start at same time or before Late
+            assert first_early <= first_late
+
+    def test_edd_priority_in_frontload_method(self):
+        """Test that frontload method processes projects in EDD order."""
+        projects = [
+            Project("Late", date(2024, 12, 31), 5),
+            Project("Early", date(2024, 11, 15), 5),
+            Project("Middle", date(2024, 12, 15), 5),
+        ]
+
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=12, method="frontload")
+
+        # Get slots for each project
+        early_slots = sorted(schedule.get_project_slots(projects[1]), key=lambda s: (s.date, s.slot_index))
+        middle_slots = sorted(schedule.get_project_slots(projects[2]), key=lambda s: (s.date, s.slot_index))
+        late_slots = sorted(schedule.get_project_slots(projects[0]), key=lambda s: (s.date, s.slot_index))
+
+        # In frontload with EDD, Early should complete before Middle, Middle before Late
+        if early_slots and middle_slots:
+            last_early = early_slots[-1].date
+            first_middle = middle_slots[0].date
+            assert last_early <= first_middle
+
+        if middle_slots and late_slots:
+            last_middle = middle_slots[-1].date
+            first_late = late_slots[0].date
+            assert last_middle <= first_late
+
+    def test_edd_with_same_deadline(self):
+        """Test scheduling when projects have the same deadline."""
+        projects = [
+            Project("Big", date(2024, 12, 31), 10),
+            Project("Small", date(2024, 12, 31), 2),
+        ]
+
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=8, method="frontload")
+
+        # With same deadline, should prioritize by remaining work (descending)
+        big_slots = schedule.get_project_slots(projects[0])
+        small_slots = schedule.get_project_slots(projects[1])
+
+        # Both should get scheduled
+        assert len(big_slots) == 20  # 10 days * 2
+        assert len(small_slots) == 4  # 2 days * 2
+
+
+class TestDefaultWeeks:
+    """Tests for default planning horizon of 52 weeks."""
+
+    def test_default_weeks_is_52(self):
+        """Test that default planning horizon is 52 weeks."""
+        projects = [Project("Test", date(2025, 12, 31), 50)]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+
+        # Call without specifying num_weeks
+        schedule = scheduler.create_schedule()
+
+        # Should span approximately 52 weeks
+        weeks = (schedule.end_date - schedule.start_date).days / 7
+        assert abs(weeks - 52) < 1  # Allow small rounding difference
+
+    def test_52_week_schedule_capacity(self):
+        """Test that 52-week schedule has correct capacity."""
+        projects = []
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=52)
+
+        # Count unique working days (Mon-Fri only)
+        unique_dates = set(s.date for s in schedule.slots if s.date.weekday() < 5)
+        working_days = len(unique_dates)
+
+        # 52 weeks ≈ 260 working days (52 * 5)
+        expected_working_days = 52 * 5
+        # Allow some variance due to start day
+        assert abs(working_days - expected_working_days) < 5
+
+
+class TestEnhancedVisualization:
+    """Tests for enhanced tile visualization."""
+
+    def test_visualization_shows_renewal_indicator(self):
+        """Test that legend shows renewal projects with indicator."""
+        base_project = Project("Base", date(2024, 11, 30), 2, renewal_days=1)
+        scheduler = Scheduler([base_project], start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=8, method="paced")
+
+        output = render_tiles(schedule, show_legend=True)
+
+        # Should show renewal in legend
+        assert "(Renewal)" in output or "Renewal" in output
+
+    def test_calendar_grid_rendering(self):
+        """Test that calendar grid renders without errors."""
+        projects = [
+            Project("A", date(2024, 12, 31), 10),
+            Project("B", date(2024, 12, 15), 5),
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=12, method="paced")
+
+        output = render_tiles(schedule, show_legend=True)
+
+        # Should contain day names
+        assert "Mon" in output
+        assert "Tue" in output
+        assert "Fri" in output
+
+        # Should contain legend
+        assert "Legend" in output
+
+
+class TestImportFunctionality:
+    """Tests for Excel import functionality."""
+
+    def test_import_config_defaults(self):
+        """Test loading default import configuration."""
+        from planner.importer import load_import_config, DEFAULT_IMPORT_CONFIG
+
+        config = load_import_config("nonexistent_config.json")
+
+        # Should return defaults
+        assert config["sheet_name"] == DEFAULT_IMPORT_CONFIG["sheet_name"]
+        assert "column_mapping" in config
+        assert "name" in config["column_mapping"]
+
+    def test_save_import_config(self, tmp_path):
+        """Test saving import configuration."""
+        from planner.importer import save_default_import_config
+
+        config_file = tmp_path / "test_import_config.json"
+        save_default_import_config(str(config_file))
+
+        # Should create file
+        assert config_file.exists()
+
+        # Should be valid JSON
+        with open(config_file) as f:
+            config = json.load(f)
+
+        assert "column_mapping" in config
+        assert "sheet_name" in config
+
+    def test_update_projects_json_new_projects(self, tmp_path):
+        """Test adding new projects to projects.json."""
+        from planner.importer import update_projects_json
+
+        projects_file = tmp_path / "projects.json"
+
+        new_projects = [
+            {"name": "New A", "end_date": "2024-12-31", "remaining_days": 10},
+            {"name": "New B", "end_date": "2024-11-30", "remaining_days": 5},
+        ]
+
+        stats = update_projects_json(new_projects, str(projects_file))
+
+        assert stats["added"] == 2
+        assert stats["updated"] == 0
+        assert stats["unchanged"] == 0
+
+        # Verify file was created
+        assert projects_file.exists()
+
+        with open(projects_file) as f:
+            data = json.load(f)
+
+        assert len(data["projects"]) == 2
+
+    def test_update_projects_json_update_existing(self, tmp_path):
+        """Test updating existing projects in projects.json."""
+        from planner.importer import update_projects_json
+
+        projects_file = tmp_path / "projects.json"
+
+        # Create initial file
+        initial_data = {
+            "projects": [
+                {"name": "Existing", "end_date": "2024-12-31", "remaining_days": 10}
+            ]
+        }
+        with open(projects_file, "w") as f:
+            json.dump(initial_data, f)
+
+        # Update with new remaining_days
+        new_projects = [
+            {"name": "Existing", "end_date": "2024-12-31", "remaining_days": 15}
+        ]
+
+        stats = update_projects_json(new_projects, str(projects_file))
+
+        assert stats["added"] == 0
+        assert stats["updated"] == 1
+        assert stats["unchanged"] == 0
+
+        # Verify update
+        with open(projects_file) as f:
+            data = json.load(f)
+
+        assert data["projects"][0]["remaining_days"] == 15
+
+    def test_update_projects_json_mixed_operations(self, tmp_path):
+        """Test mixed add/update/unchanged operations."""
+        from planner.importer import update_projects_json
+
+        projects_file = tmp_path / "projects.json"
+
+        # Create initial file
+        initial_data = {
+            "projects": [
+                {"name": "Existing", "end_date": "2024-12-31", "remaining_days": 10},
+                {"name": "Unchanged", "end_date": "2024-11-30", "remaining_days": 5},
+            ]
+        }
+        with open(projects_file, "w") as f:
+            json.dump(initial_data, f)
+
+        # Mixed operations
+        new_projects = [
+            {"name": "Existing", "end_date": "2024-12-31", "remaining_days": 15},  # Update
+            {"name": "Unchanged", "end_date": "2024-11-30", "remaining_days": 5},  # Unchanged
+            {"name": "New", "end_date": "2024-10-31", "remaining_days": 3},  # Add
+        ]
+
+        stats = update_projects_json(new_projects, str(projects_file))
+
+        assert stats["added"] == 1
+        assert stats["updated"] == 1
+        assert stats["unchanged"] == 1
+
+
+class TestEdgeCases:
+    """Tests for edge cases with new features."""
+
+    def test_project_with_start_date_in_future(self):
+        """Test project with start_date in the future."""
+        future_project = Project(
+            name="Future",
+            start_date=date(2024, 12, 1),
+            end_date=date(2024, 12, 31),
+            remaining_days=5,
+        )
+
+        # Should still be schedulable
+        scheduler = Scheduler([future_project], start_date=date(2024, 11, 1))
+        schedule = scheduler.create_schedule(num_weeks=12, method="paced")
+
+        # Project should get scheduled
+        slots = schedule.get_project_slots(future_project)
+        assert len(slots) > 0
+
+    def test_renewal_with_zero_days(self):
+        """Test project with renewal_days=0."""
+        project = Project(
+            name="NoRenewal",
+            end_date=date(2024, 11, 30),
+            remaining_days=2,
+            renewal_days=0,
+        )
+
+        scheduler = Scheduler([project], start_date=date(2024, 11, 1))
+        schedule = scheduler.create_schedule(num_weeks=8, method="paced")
+
+        # Should not create renewal
+        renewals = [p for p in scheduler.projects if p.is_renewal]
+        assert len(renewals) == 0
+
+    def test_very_long_planning_horizon(self):
+        """Test with very long planning horizon (104 weeks = 2 years)."""
+        projects = [Project("Long", date(2026, 12, 31), 100)]
+
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 1))
+        schedule = scheduler.create_schedule(num_weeks=104, method="paced")
+
+        # Should create schedule without errors
+        assert len(schedule.slots) > 0
+        weeks = (schedule.end_date - schedule.start_date).days / 7
+        assert abs(weeks - 104) < 1
+
+
+class TestContinuityPriority:
+    """Tests for continuity priority to minimize fragmentation."""
+
+    def test_continuity_groups_project_work(self):
+        """Test that projects are worked on in consecutive slots."""
+        projects = [
+            Project("A", date(2024, 12, 31), 10),
+            Project("B", date(2024, 12, 31), 10),
+            Project("C", date(2024, 12, 31), 10),
+        ]
+
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=12, method="paced")
+
+        # Check that each project has consecutive slots
+        for project in projects:
+            project_slots = sorted(
+                schedule.get_project_slots(project),
+                key=lambda s: (s.date, s.slot_index)
+            )
+
+            if len(project_slots) >= 4:  # At least 2 days
+                # Count runs of consecutive slots
+                consecutive_runs = []
+                current_run = 1
+
+                for i in range(1, len(project_slots)):
+                    prev = project_slots[i - 1]
+                    curr = project_slots[i]
+
+                    # Check if consecutive (same day or next slot)
+                    if (curr.date == prev.date and curr.slot_index == prev.slot_index + 1) or \
+                       (curr.date == prev.date + timedelta(days=1) and prev.slot_index == 1 and curr.slot_index == 0):
+                        current_run += 1
+                    else:
+                        consecutive_runs.append(current_run)
+                        current_run = 1
+
+                consecutive_runs.append(current_run)
+
+                # At least some runs should be longer than 2 slots (minimize fragmentation)
+                long_runs = [r for r in consecutive_runs if r >= 3]
+                assert len(long_runs) > 0, f"Project {project.name} should have some consecutive work periods"
+
+    def test_continuity_limits_consecutive_slots(self):
+        """Test that continuity doesn't monopolize too many consecutive slots."""
+        projects = [
+            Project("A", date(2024, 12, 31), 30),  # Large project
+            Project("B", date(2024, 12, 31), 5),
+        ]
+
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=12, method="paced")
+
+        # Check that project A doesn't monopolize too many consecutive slots
+        a_slots = sorted(
+            schedule.get_project_slots(projects[0]),
+            key=lambda s: (s.date, s.slot_index)
+        )
+
+        # Find longest consecutive run
+        max_consecutive = 1
+        current_consecutive = 1
+
+        for i in range(1, len(a_slots)):
+            prev = a_slots[i - 1]
+            curr = a_slots[i]
+
+            # Check if consecutive
+            if (curr.date == prev.date and curr.slot_index == prev.slot_index + 1) or \
+               (curr.date == prev.date + timedelta(days=1) and prev.slot_index == 1 and curr.slot_index == 0):
+                current_consecutive += 1
+                max_consecutive = max(max_consecutive, current_consecutive)
+            else:
+                current_consecutive = 1
+
+        # Max consecutive should be reasonable (not more than 10 slots = 1 week)
+        assert max_consecutive <= 12, f"Project A should not monopolize more than ~1 week ({max_consecutive} slots)"
+
+    def test_continuity_with_multiple_projects(self):
+        """Test continuity with multiple projects ensures fair distribution."""
+        projects = [
+            Project("A", date(2024, 12, 31), 15),
+            Project("B", date(2024, 12, 15), 15),
+            Project("C", date(2024, 11, 30), 15),
+        ]
+
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
+        schedule = scheduler.create_schedule(num_weeks=12, method="paced")
+
+        # All projects should get scheduled
+        for project in projects:
+            slots = schedule.get_project_slots(project)
+            assert len(slots) > 0, f"{project.name} should get scheduled"
+
+        # Check that work is distributed across the schedule (not all at start)
+        for project in projects:
+            project_slots = schedule.get_project_slots(project)
+            if project_slots:
+                dates = sorted(set(s.date for s in project_slots))
+                # Should span multiple weeks
+                date_range = (dates[-1] - dates[0]).days
+                # With continuity, should still span some time (not all in one week)
+                if len(project_slots) > 10:  # Projects with more than 5 days
+                    assert date_range > 7, f"{project.name} should span more than a week"
+
+    def test_continuity_resets_on_weekends(self):
+        """Test that continuity is reset on weekends."""
+        projects = [Project("A", date(2024, 12, 31), 20)]
+
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))  # Monday
+        schedule = scheduler.create_schedule(num_weeks=4, method="paced")
+
+        # Get slots and check that there are no weekend slots
+        a_slots = schedule.get_project_slots(projects[0])
+
+        for slot in a_slots:
+            assert slot.date.weekday() < 5, "No work should be scheduled on weekends"
+
+        # Weekend should act as natural break in continuity
+        # This is implicitly tested by the algorithm

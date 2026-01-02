@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+excel = ["openpyxl>=3.1.0"]
+
 [project.scripts]
 planner = "planner.cli:main"
 
