@@ -1,0 +1,173 @@
+---
+title: "Project Schedule"
+format:
+  html:
+    code-fold: true
+    #theme: darkly
+    toc: true
+jupyter: python3
+---
+
+```{python}
+#| echo: false
+#| message: false
+#| warning: false
+
+from datetime import date
+import pandas as pd
+
+# Import planner modules
+from planner.scheduler import Scheduler
+from planner.analysis import (
+    load_projects,
+    compute_weekly_availability,
+    create_calendar_heatmap,
+    create_availability_plot,
+)
+
+# Configuration
+CONFIG_FILE = "projects.json"
+NUM_WEEKS = 52
+
+# Load and schedule
+projects = load_projects(CONFIG_FILE)
+scheduler = Scheduler(projects, start_date=date.today())
+schedule_paced = scheduler.create_schedule(num_weeks=NUM_WEEKS, method="paced")
+schedule_frontload = scheduler.create_schedule(num_weeks=NUM_WEEKS, method="frontload")
+
+# Get statistics
+stats_paced = scheduler.get_statistics(schedule_paced)
+stats_frontload = scheduler.get_statistics(schedule_frontload)
+
+# Compute availability
+paced_availability = compute_weekly_availability(schedule_paced, NUM_WEEKS)
+frontload_availability = compute_weekly_availability(schedule_frontload, NUM_WEEKS)
+```
+
+## Overview
+
+Planning **`{python} len(projects)` projects** over a **`{python} NUM_WEEKS`-week** horizon.
+
+### Project Summary
+
+```{python}
+#| echo: false
+
+# Create project summary table
+project_data = []
+for project in projects:
+    project_data.append({
+        "Project": project.name,
+        "End Date": project.end_date.strftime("%Y-%m-%d"),
+        "Remaining Days": f"{project.remaining_days:.1f}",
+        "Renewal Days": f"{project.renewal_days:.1f}" if project.renewal_days else "—"
+    })
+
+df_projects = pd.DataFrame(project_data)
+df_projects.style.hide(axis="index")
+```
+
+## Paced Method Schedule
+
+Balances work across all projects using weekly allocation limits. Each project is assigned no more than floor(ideal_days_per_week) days per week, with fractional accumulation for precise pacing.
+
+### Calendar View
+
+```{python}
+#| echo: false
+#| label: fig-paced-calendar
+#| fig-cap: "Paced method calendar heatmap showing project assignments"
+
+fig_paced_cal = create_calendar_heatmap(schedule_paced, "Paced Method Calendar")
+if fig_paced_cal:
+    fig_paced_cal.show()
+```
+
+### Statistics
+
+```{python}
+#| echo: false
+
+# Create statistics table for paced method
+stat_data_paced = []
+for stat in sorted(stats_paced, key=lambda s: s.days_per_week, reverse=True):
+    stat_data_paced.append({
+        "Project": stat.project.name,
+        "Days/Week": f"{stat.days_per_week:.1f}",
+        "Total Slots": stat.total_slots_assigned,
+        "Status": "Complete" if stat.fully_scheduled else "Partial",
+        "Last Scheduled": stat.last_scheduled_date.strftime('%Y-%m-%d') if stat.last_scheduled_date else "—"
+    })
+
+df_stats_paced = pd.DataFrame(stat_data_paced)
+df_stats_paced.style.hide(axis="index")
+```
+
+**Work scheduled until:** `{python} schedule_paced.get_last_work_date().strftime('%Y-%m-%d (%A)') if schedule_paced.get_last_work_date() else 'N/A'`
+
+## Frontload Method Schedule
+
+Concentrates work by completing projects sequentially in EDD order. Minimizes context switching and focuses on one project at a time.
+
+### Calendar View
+
+```{python}
+#| echo: false
+#| label: fig-frontload-calendar
+#| fig-cap: "Frontload method calendar heatmap showing project assignments"
+
+fig_frontload_cal = create_calendar_heatmap(schedule_frontload, "Frontload Method Calendar")
+if fig_frontload_cal:
+    fig_frontload_cal.show()
+```
+
+### Statistics
+
+```{python}
+#| echo: false
+
+# Create statistics table for frontload method
+stat_data_frontload = []
+for stat in sorted(stats_frontload, key=lambda s: s.days_per_week, reverse=True):
+    stat_data_frontload.append({
+        "Project": stat.project.name,
+        "Days/Week": f"{stat.days_per_week:.1f}",
+        "Total Slots": stat.total_slots_assigned,
+        "Status": "Complete" if stat.fully_scheduled else "Partial",
+        "Last Scheduled": stat.last_scheduled_date.strftime('%Y-%m-%d') if stat.last_scheduled_date else "—"
+    })
+
+df_stats_frontload = pd.DataFrame(stat_data_frontload)
+df_stats_frontload.style.hide(axis="index")
+```
+
+**Work scheduled until:** `{python} schedule_frontload.get_last_work_date().strftime('%Y-%m-%d (%A)') if schedule_frontload.get_last_work_date() else 'N/A'`
+
+## Availability Analysis
+
+### Weekly Availability Comparison
+
+```{python}
+#| echo: false
+#| label: fig-availability
+#| fig-cap: "Weekly availability percentage over time for both scheduling methods"
+
+fig = create_availability_plot(paced_availability, frontload_availability)
+fig.show()
+```
+
+### Key Insights
+
+```{python}
+#| echo: false
+
+# Calculate some insights
+paced_percents = [w['percent_available'] for w in paced_availability]
+frontload_percents = [w['percent_available'] for w in frontload_availability]
+
+paced_avg = sum(paced_percents) / len(paced_percents) if paced_percents else 0
+frontload_avg = sum(frontload_percents) / len(frontload_percents) if frontload_percents else 0
+
+print(f"**Paced Method:** Average availability = {paced_avg:.1f}%")
+print(f"**Frontload Method:** Average availability = {frontload_avg:.1f}%")
+```

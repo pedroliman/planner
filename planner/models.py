@@ -51,8 +51,8 @@ class Project:
 
     @property
     def slots_remaining(self) -> int:
-        """Number of 4-hour slots remaining (2 slots per day)."""
-        return int(self.remaining_days * 2)
+        """Number of 8-hour slots remaining (1 slot per day)."""
+        return int(self.remaining_days)
 
     def days_until_deadline(self, from_date: date) -> int:
         """Calculate working days until the deadline."""
@@ -64,29 +64,15 @@ class Project:
 
 @dataclass
 class ScheduledSlot:
-    """A 4-hour time slot assigned to a project.
+    """An 8-hour day slot assigned to a project.
 
     Attributes:
         date: The date of the slot
-        slot_index: 0 for morning (AM), 1 for afternoon (PM)
         project: The assigned project (None if unassigned)
     """
 
     date: date
-    slot_index: int  # 0 = AM (morning), 1 = PM (afternoon)
     project: Optional[Project] = None
-
-    @property
-    def is_morning(self) -> bool:
-        return self.slot_index == 0
-
-    @property
-    def is_afternoon(self) -> bool:
-        return self.slot_index == 1
-
-    @property
-    def time_label(self) -> str:
-        return "AM" if self.is_morning else "PM"
 
 
 @dataclass

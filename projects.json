@@ -32,6 +32,11 @@
       "name": "OPTIC",
       "end_date": "2026-06-30",
       "remaining_days": 27
+    },
+    {
+      "name": "Proposals",
+      "end_date": "2026-06-30",
+      "remaining_days": 10
     }
   ]
 }

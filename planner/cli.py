@@ -2,6 +2,8 @@
 
 import json
 import sys
+import webbrowser
+import subprocess
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -15,12 +17,6 @@ from rich.text import Text
 
 from planner.models import Project
 from planner.scheduler import Scheduler
-from planner.visualization import (
-    render_tiles,
-    render_statistics,
-    compute_weekly_availability,
-    render_availability_plot,
-)
 from planner.importer import (
     read_excel_projects,
     update_projects_json,
@@ -152,51 +148,45 @@ def plan(ctx, weeks, method):
     console.print(table)
     console.print()
 
-    # Create scheduler
-    with console.status("[bold green]Generating schedules...", spinner="dots"):
-        scheduler = Scheduler(projects, start_date=date.today())
-        schedule_paced = scheduler.create_schedule(num_weeks=weeks, method="paced")
-        schedule_frontload = scheduler.create_schedule(num_weeks=weeks, method="frontload")
+    # Render Quarto document
+    qmd_path = Path("schedule.qmd")
+    if not qmd_path.exists():
+        console.print(f"[red]Error:[/red] Quarto document 'schedule.qmd' not found.")
+        sys.exit(1)
 
-    # Determine which schedule to show tiles for
-    selected_method = method.lower()
-    selected_schedule = schedule_paced if selected_method == "paced" else schedule_frontload
+    with console.status("[bold green]Rendering Quarto document...", spinner="dots"):
+        try:
+            result = subprocess.run(
+                ["quarto", "render", "schedule.qmd"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+        except FileNotFoundError:
+            console.print("[red]Error:[/red] Quarto is not installed.")
+            console.print("\n[yellow]Install Quarto from:[/yellow] https://quarto.org/docs/get-started/")
+            sys.exit(1)
+        except subprocess.CalledProcessError as e:
+            console.print(f"[red]Error rendering Quarto document:[/red]")
+            console.print(e.stderr)
+            sys.exit(1)
 
-    # Display tile visualization for selected method only
+    # Find the generated HTML file
+    html_path = Path("schedule.html")
+    if not html_path.exists():
+        console.print(f"[red]Error:[/red] Generated HTML file not found.")
+        sys.exit(1)
+
+    # Open in browser
     console.print(Panel(
-        f"[bold]Schedule Visualization[/bold]\n[dim]Method: {selected_method.upper()}[/dim]",
-        border_style="blue",
-        box=box.DOUBLE
+        f"[bold green]✓ Schedule visualization generated![/bold green]\n\n"
+        f"Opening interactive view in your browser...\n"
+        f"[dim]File: {html_path.absolute()}[/dim]",
+        border_style="green",
+        box=box.ROUNDED
     ))
-    console.print()
-    console.print(render_tiles(selected_schedule))
-    console.print()
 
-    # Compute weekly availability for both methods
-    paced_availability = compute_weekly_availability(schedule_paced, weeks)
-    frontload_availability = compute_weekly_availability(schedule_frontload, weeks)
-
-    # Display availability plot
-    console.print(render_availability_plot(paced_availability, frontload_availability))
-    console.print()
-
-    # Display statistics for both methods
-    stats_paced = scheduler.get_statistics(schedule_paced)
-    stats_frontload = scheduler.get_statistics(schedule_frontload)
-
-    console.print(Panel(
-        "[bold]Statistics Comparison[/bold]",
-        border_style="blue",
-        box=box.DOUBLE
-    ))
-    console.print()
-
-    console.print("[bold cyan]PACED METHOD[/bold cyan] (default)")
-    console.print(render_statistics(stats_paced, schedule_paced))
-    console.print()
-
-    console.print("[bold yellow]FRONTLOAD METHOD[/bold yellow]")
-    console.print(render_statistics(stats_frontload, schedule_frontload))
+    webbrowser.open(f'file://{html_path.absolute()}')
 
 
 @cli.command()

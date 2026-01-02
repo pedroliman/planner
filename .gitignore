@@ -41,3 +41,7 @@ uv.lock
 
 # Project config (user-specific)
 # projects.json
+*.html
+*.css
+*.js
+*.woff

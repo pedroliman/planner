@@ -33,13 +33,13 @@ class Scheduler:
                    moving to the next (concentrates work)
 
     Both methods:
-    1. Iterate through each 4-hour slot (2 per day)
+    1. Iterate through each day slot (1 per day)
     2. Skip weekends (Monday-Friday only)
-    3. Support half-day (4-hour) scheduling for smaller projects
+    3. Support full-day (8-hour) scheduling
     """
 
-    # Maximum gap between working on the same project (in slots, 2 weeks = 28 slots)
-    MAX_GAP_SLOTS = 28  # 14 days * 2 slots per day
+    # Maximum gap between working on the same project (in slots, 2 weeks = 14 slots)
+    MAX_GAP_SLOTS = 14  # 14 days * 1 slot per day
 
     def __init__(self, projects: list[Project], start_date: Optional[date] = None):
         """Initialize the scheduler.
@@ -225,10 +225,11 @@ class Scheduler:
             raise ValueError(f"Unknown scheduling method: {method}. Use 'paced' or 'frontload'.")
 
     def _create_schedule_paced(self, num_weeks: int = 52) -> Schedule:
-        """Create a paced schedule that balances work across projects.
+        """Create a paced schedule with weekly allocation limits.
 
-        This method ensures each project is worked on at least once every 2 weeks
-        and assigns work proportionally based on remaining days, with EDD priority.
+        This method calculates ideal days per week for each project and assigns
+        no more than floor(ideal_days_per_week) days per week. Projects accumulate
+        fractional allocations until they can be assigned.
 
         Args:
             num_weeks: Number of weeks to plan ahead
@@ -244,65 +245,119 @@ class Scheduler:
         all_projects = self._generate_renewal_projects(num_weeks)
         self.projects = all_projects  # Update projects list
 
-        # Track remaining work for each project (in slots)
-        remaining_work = {p: p.slots_remaining for p in self.projects}
+        # Track remaining work for each project (in days)
+        remaining_work = {p: p.remaining_days for p in self.projects}
 
-        # Track when each project was last scheduled (slot index)
-        last_scheduled: dict[Project, int] = {}
+        # Track weekly allocations for each project
+        weekly_allocations: dict[Project, int] = {p: 0 for p in self.projects}
 
-        # Track continuity for minimizing fragmentation
-        current_project: Optional[Project] = None
-        consecutive_slots = 0
+        # Track accumulated fractional days for each project
+        accumulated_days: dict[Project, float] = {p: 0.0 for p in self.projects}
 
         # Generate slots for each day
         num_days = num_weeks * 7
-        slot_index = 0
+        current_week_start = self.start_date
 
         for day_offset in range(num_days):
             current_date = self.start_date + timedelta(days=day_offset)
 
             # Skip weekends
             if current_date.weekday() >= 5:
-                # Reset continuity on weekends
-                current_project = None
-                consecutive_slots = 0
                 continue
 
-            # Create two slots per day (AM and PM)
-            for slot_of_day in range(2):
-                slot = ScheduledSlot(date=current_date, slot_index=slot_of_day)
+            # Check if we've started a new week (Monday)
+            if current_date.weekday() == 0 and current_date != current_week_start:
+                # Reset weekly allocations
+                current_week_start = current_date
+                weekly_allocations = {p: 0 for p in self.projects}
 
-                # Find the best project for this slot (with continuity tracking)
-                project = self._get_most_urgent_project(
-                    current_date,
-                    remaining_work,
-                    last_scheduled,
-                    slot_index,
-                    current_project,
-                    consecutive_slots,
-                )
+            # Create one slot per day
+            slot = ScheduledSlot(date=current_date)
 
-                if project:
-                    slot.project = project
-                    remaining_work[project] -= 1
-                    last_scheduled[project] = slot_index
+            # Find the best project for this slot
+            project = self._get_paced_project(
+                current_date,
+                remaining_work,
+                weekly_allocations,
+                accumulated_days,
+            )
 
-                    # Update continuity tracking
-                    if project == current_project:
-                        consecutive_slots += 1
-                    else:
-                        current_project = project
-                        consecutive_slots = 1
+            if project:
+                slot.project = project
+                remaining_work[project] -= 1
+                weekly_allocations[project] += 1
+                # Reset accumulation when project is assigned
+                accumulated_days[project] = 0.0
 
-                else:
-                    # Reset continuity when no project assigned
-                    current_project = None
-                    consecutive_slots = 0
-
-                schedule.slots.append(slot)
-                slot_index += 1
+            schedule.slots.append(slot)
 
         return schedule
+
+    def _get_paced_project(
+        self,
+        current_date: date,
+        remaining_work: dict[Project, float],
+        weekly_allocations: dict[Project, int],
+        accumulated_days: dict[Project, float],
+    ) -> Optional[Project]:
+        """Select the next project for paced scheduling with weekly limits.
+
+        Args:
+            current_date: Current date being scheduled
+            remaining_work: Dict of remaining days per project
+            weekly_allocations: Dict of days allocated this week per project
+            accumulated_days: Dict of accumulated fractional days per project
+
+        Returns:
+            Project to schedule, or None if no eligible project
+        """
+        candidates = []
+
+        for project, remaining in remaining_work.items():
+            if remaining <= 0:
+                continue
+
+            # Calculate remaining weeks for this project
+            days_until_deadline = (project.end_date - current_date).days
+            remaining_weeks = max(days_until_deadline / 7.0, 0.1)  # Avoid division by zero
+
+            # Calculate ideal days per week
+            ideal_days_per_week = remaining / remaining_weeks
+
+            # Maximum days that can be allocated per week (floor)
+            max_days_per_week = int(ideal_days_per_week)
+
+            # Add fractional part to accumulation
+            fractional_part = ideal_days_per_week - max_days_per_week
+            accumulated_days[project] += fractional_part
+
+            # If accumulated days >= 1, allow one extra day this week
+            if accumulated_days[project] >= 1.0:
+                max_days_per_week += 1
+
+            # Check if this project has room in this week
+            if weekly_allocations[project] >= max_days_per_week:
+                continue
+
+            # Calculate priority score
+            # Priority: EDD (earlier deadline = higher priority)
+            edd_score = -days_until_deadline
+
+            # Add urgency based on allocation deficit
+            current_allocation_rate = weekly_allocations[project]
+            allocation_deficit = ideal_days_per_week - current_allocation_rate
+
+            # Combined score
+            score = edd_score + allocation_deficit * 100
+
+            candidates.append((project, score))
+
+        if not candidates:
+            return None
+
+        # Sort by score (higher is better) and return best project
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0]
 
     def _create_schedule_frontload(self, num_weeks: int = 52) -> Schedule:
         """Create a frontload schedule that concentrates work on projects.
@@ -345,26 +400,25 @@ class Scheduler:
             if current_date.weekday() >= 5:
                 continue
 
-            # Create two slots per day (AM and PM)
-            for slot_of_day in range(2):
-                slot = ScheduledSlot(date=current_date, slot_index=slot_of_day)
+            # Create one slot per day
+            slot = ScheduledSlot(date=current_date)
 
-                # Find the next project with remaining work
-                project = None
-                while current_project_idx < len(sorted_projects):
-                    candidate = sorted_projects[current_project_idx]
-                    if remaining_work[candidate] > 0:
-                        project = candidate
-                        break
-                    else:
-                        # Move to next project when current one is done
-                        current_project_idx += 1
+            # Find the next project with remaining work
+            project = None
+            while current_project_idx < len(sorted_projects):
+                candidate = sorted_projects[current_project_idx]
+                if remaining_work[candidate] > 0:
+                    project = candidate
+                    break
+                else:
+                    # Move to next project when current one is done
+                    current_project_idx += 1
 
-                if project:
-                    slot.project = project
-                    remaining_work[project] -= 1
+            if project:
+                slot.project = project
+                remaining_work[project] -= 1
 
-                schedule.slots.append(slot)
+            schedule.slots.append(slot)
 
         return schedule
 
@@ -391,7 +445,7 @@ class Scheduler:
                     project=project,
                     total_slots_assigned=total_slots,
                     slots_per_week=total_slots / num_weeks if num_weeks > 0 else 0,
-                    days_per_week=total_slots / (2 * num_weeks) if num_weeks > 0 else 0,
+                    days_per_week=total_slots / num_weeks if num_weeks > 0 else 0,  # 1 slot = 1 day
                     last_scheduled_date=last_date,
                 )
             )
