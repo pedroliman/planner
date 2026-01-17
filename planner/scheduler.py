@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
 
-from planner.models import Project, Schedule, ScheduledSlot, DEFAULT_COLORS
+from planner.models import DEFAULT_COLORS, Project, Schedule, ScheduledSlot
 
 
 @dataclass
@@ -100,13 +100,16 @@ class Scheduler:
                         is_renewal=True,
                         parent_name=project.name,
                         color=project.color,  # Use same color as parent
+                        priority=project.priority,  # Inherit priority from parent
                         _color_index=project._color_index,
                     )
                     all_projects.append(renewal)
 
         return all_projects
 
-    def _calculate_weights(self, remaining_work: dict[Project, int]) -> dict[Project, float]:
+    def _calculate_weights(
+        self, remaining_work: dict[Project, int]
+    ) -> dict[Project, float]:
         """Calculate scheduling weights based on remaining work.
 
         Projects with more remaining work get proportionally more slots.
@@ -156,7 +159,9 @@ class Scheduler:
             continuity_bonus = max(0, 1.0 - consecutive_slots * 0.15)
 
             # Apply continuity bonus if still significant
-            if continuity_bonus > 0.3 and consecutive_slots < 10:  # Max ~1 week continuous
+            if (
+                continuity_bonus > 0.3 and consecutive_slots < 10
+            ):  # Max ~1 week continuous
                 # Strong bonus for continuity (higher than other factors)
                 # This ensures we continue working on the same project
                 return current_project
@@ -164,7 +169,9 @@ class Scheduler:
         # Check for projects that need to be worked on (2-week rule)
         urgent = []
         for project in candidates:
-            slots_since_last = current_slot - last_scheduled.get(project, -self.MAX_GAP_SLOTS)
+            slots_since_last = current_slot - last_scheduled.get(
+                project, -self.MAX_GAP_SLOTS
+            )
             if slots_since_last >= self.MAX_GAP_SLOTS:
                 # Calculate urgency score: higher means more urgent
                 # Prioritize by earliest due date (days until deadline, negative for sooner)
@@ -182,21 +189,30 @@ class Scheduler:
 
         # Find project with highest score that has work remaining
         best_project = None
-        best_score = -float('inf')
+        best_score = -float("inf")
 
         for project in candidates:
             # Score combines:
-            # 1. EDD: earlier deadlines are prioritized (negative days until deadline)
-            # 2. Weight: proportional to remaining work
-            # 3. Time since last scheduled
+            # 1. Priority: higher priority = higher score
+            # 2. EDD: earlier deadlines are prioritized (negative days until deadline)
+            # 3. Weight: proportional to remaining work
+            # 4. Time since last scheduled
             days_until = (project.end_date - current_date).days
             slots_since = current_slot - last_scheduled.get(project, -1)
+
+            # Priority component (higher priority = higher score)
+            priority_score = project.priority
 
             # EDD component (earlier deadline = higher priority)
             edd_score = -days_until / 365.0  # Normalize to 0-1 range
 
-            # Combined score
-            score = edd_score * 2.0 + weights[project] + slots_since * 0.1
+            # Combined score (priority has highest weight)
+            score = (
+                priority_score * 10.0
+                + edd_score * 2.0
+                + weights[project]
+                + slots_since * 0.1
+            )
 
             if score > best_score:
                 best_score = score
@@ -222,7 +238,9 @@ class Scheduler:
         elif method == "frontload":
             return self._create_schedule_frontload(num_weeks)
         else:
-            raise ValueError(f"Unknown scheduling method: {method}. Use 'paced' or 'frontload'.")
+            raise ValueError(
+                f"Unknown scheduling method: {method}. Use 'paced' or 'frontload'."
+            )
 
     def _create_schedule_paced(self, num_weeks: int = 52) -> Schedule:
         """Create a paced schedule with weekly allocation limits.
@@ -323,7 +341,9 @@ class Scheduler:
 
             # Calculate remaining weeks for this project
             days_until_deadline = (project.end_date - current_date).days
-            remaining_weeks = max(days_until_deadline / 7.0, 0.1)  # Avoid division by zero
+            remaining_weeks = max(
+                days_until_deadline / 7.0, 0.1
+            )  # Avoid division by zero
 
             # Calculate ideal days per week
             ideal_days_per_week = remaining / remaining_weeks
@@ -339,20 +359,28 @@ class Scheduler:
             if accumulated_days[project] >= 1.0:
                 max_days_per_week += 1
 
+            # High-priority projects get at least 1 day per week if they have remaining work
+            if project.priority > 0 and max_days_per_week < 1:
+                max_days_per_week = 1
+
             # Check if this project has room in this week
             if weekly_allocations[project] >= max_days_per_week:
                 continue
 
             # Calculate priority score
-            # Priority: EDD (earlier deadline = higher priority)
+            # Components:
+            # 1. Project priority (higher = more important)
+            # 2. EDD (earlier deadline = higher priority)
+            # 3. Allocation deficit (need to catch up)
+            priority_score = project.priority * 1000  # Highest weight
             edd_score = -days_until_deadline
 
             # Add urgency based on allocation deficit
             current_allocation_rate = weekly_allocations[project]
             allocation_deficit = ideal_days_per_week - current_allocation_rate
 
-            # Combined score
-            score = edd_score + allocation_deficit * 100
+            # Combined score (priority dominates, then EDD, then allocation)
+            score = priority_score + edd_score + allocation_deficit * 100
 
             candidates.append((project, score))
 
@@ -384,10 +412,9 @@ class Scheduler:
         all_projects = self._generate_renewal_projects(num_weeks)
         self.projects = all_projects  # Update projects list
 
-        # Sort projects by EDD first (earliest deadline first), then by remaining work (descending)
+        # Sort projects by priority first (highest first), then EDD (earliest deadline first), then by remaining work (descending)
         sorted_projects = sorted(
-            self.projects,
-            key=lambda p: (p.end_date, -p.slots_remaining)
+            self.projects, key=lambda p: (-p.priority, p.end_date, -p.slots_remaining)
         )
 
         # Track remaining work for each project (in slots)
@@ -413,7 +440,10 @@ class Scheduler:
             for candidate in sorted_projects:
                 if remaining_work[candidate] > 0:
                     # Check if project has started
-                    if candidate.start_date is not None and current_date < candidate.start_date:
+                    if (
+                        candidate.start_date is not None
+                        and current_date < candidate.start_date
+                    ):
                         continue
                     project = candidate
                     break
@@ -433,7 +463,11 @@ class Scheduler:
             List of ProjectStats for each project
         """
         stats = []
-        num_weeks = (schedule.end_date - schedule.start_date).days / 7 if schedule.end_date and schedule.start_date else 1
+        num_weeks = (
+            (schedule.end_date - schedule.start_date).days / 7
+            if schedule.end_date and schedule.start_date
+            else 1
+        )
 
         for project in self.projects:
             project_slots = schedule.get_project_slots(project)
@@ -449,7 +483,9 @@ class Scheduler:
                     project=project,
                     total_slots_assigned=total_slots,
                     slots_per_week=total_slots / num_weeks if num_weeks > 0 else 0,
-                    days_per_week=total_slots / num_weeks if num_weeks > 0 else 0,  # 1 slot = 1 day
+                    days_per_week=total_slots / num_weeks
+                    if num_weeks > 0
+                    else 0,  # 1 slot = 1 day
                     last_scheduled_date=last_date,
                 )
             )

@@ -20,8 +20,8 @@ I'm not asking for much. I have a very simple use case. I have 5-10 research pro
 I want to be able to quickly answer a few questions:
 
 1. What should I focus on this week, from a budget perspective?
-2. Do I have too much or too little work? 
-3. When should I start a new project? 
+2. Do I have too much or too little work?
+3. When should I start a new project?
 4. And when will I finally get to that back-burner project?
 
 My frustration with existing tools and everything I tried is it is surprisingly difficult to answer those questions. I've tried vibe-coding a web planner that would help me answer those questions, but it became too complicated. Then I tried just using a spreadsheet, but the issue is that this is a sequential planning problem and that gets easily ugly in excel. So yet again I tried, and with Claude Code's help, I actually have something I like now.
@@ -61,7 +61,7 @@ The json file looks like this:
 
 Once you have your input data, you read it in, and create a schedule based on the data, choosing one of the methods.
 
-The paced approach spreads work across all active projects, making steady progress on everything simultaneously. This is usually how researchers do their work. It prioritizes projects by deadline (earliest due date first) but tries to make sure every project gets worked on every two weeks. 
+The paced approach spreads work across all active projects, making steady progress on everything simultaneously. This is usually how researchers do their work. It prioritizes projects by deadline (earliest due date first) but tries to make sure every project gets worked on every two weeks.
 
 The frontload approach completes projects one at a time in deadline order. The point of this method is to just provide a bounding case, and gives a better sense of priority, and when exactly I'd need more work if I was trying to knock everything out as soon as possible.
 
@@ -91,9 +91,12 @@ from planner.analysis import (
 CONFIG_FILE = "projects.json"
 NUM_WEEKS = 52
 
+# Set date to when data was updated
+start_date = date(2026, 1, 12)
+
 # Load and schedule
 projects = load_projects(CONFIG_FILE)
-scheduler = Scheduler(projects, start_date=date.today())
+scheduler = Scheduler(projects, start_date=start_date)
 schedule_paced = scheduler.create_schedule(num_weeks=NUM_WEEKS, method="paced")
 schedule_frontload = scheduler.create_schedule(num_weeks=NUM_WEEKS, method="frontload")
 

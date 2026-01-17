@@ -46,13 +46,16 @@ projects.json → load_projects() → Scheduler → Schedule → Plotly visualiz
 
 **Paced Method** (default):
 - Balances work across all projects
-- EDD (Earliest Due Date) prioritization
+- Priority-first: Projects with higher priority values are scheduled first
+- EDD (Earliest Due Date) prioritization (secondary to priority)
 - Continuity: Groups 2-6 consecutive slots per project
 - Two-week rule: Each project worked on at least once every 14 days
 - Proportional allocation based on remaining work
 
 **Frontload Method**:
-- Completes projects sequentially in EDD order
+- Completes projects sequentially
+- Priority-first: Projects with higher priority values are scheduled first
+- EDD (Earliest Due Date) prioritization (secondary to priority)
 - Minimizes context switching
 - No two-week rule
 
@@ -61,6 +64,7 @@ Both methods:
 - Support fractional days (0.5 = half-day)
 - Generate renewal projects dynamically
 - Default 52-week planning horizon
+- Support project priorities (higher number = higher priority, default 0)
 
 ### Configuration Format
 
@@ -73,15 +77,23 @@ Both methods:
       "end_date": "2024-12-31",
       "remaining_days": 15,
       "start_date": "2024-01-01",    // Optional
-      "renewal_days": 5                // Optional
+      "renewal_days": 5,               // Optional
+      "priority": 5                    // Optional (default 0, higher = more important)
     }
   ]
 }
 ```
 
+**Priority system**:
+- Priority is an integer value (higher number = higher priority)
+- Default priority is 0 if not specified
+- Projects with higher priority are scheduled before lower priority projects
+- Priority takes precedence over EDD in both scheduling methods
+- Renewal projects inherit the priority from their parent project
+
 **Renewal logic**:
 - When `renewal_days` is set, creates renewal project after parent completes
-- Renewal inherits parent's color and starts day after parent `end_date`
+- Renewal inherits parent's color, priority, and starts day after parent `end_date`
 - Renewals don't auto-renew (no recursion)
 
 ### Visualization System

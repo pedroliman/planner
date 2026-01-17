@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Optional
 
-
 # Default color palette for projects
 DEFAULT_COLORS = [
     "\033[92m",  # Green
@@ -31,6 +30,7 @@ class Project:
         is_renewal: Internal flag to track if this is a renewal project
         parent_name: Name of the parent project if this is a renewal
         color: ANSI color code for visualization (auto-assigned if not provided)
+        priority: Priority level (higher number = higher priority, default 0)
     """
 
     name: str
@@ -41,6 +41,7 @@ class Project:
     is_renewal: bool = False
     parent_name: Optional[str] = None
     color: Optional[str] = None
+    priority: int = 0
     _color_index: int = field(default=0, repr=False)
 
     def __post_init__(self):
