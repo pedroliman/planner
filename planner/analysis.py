@@ -63,15 +63,18 @@ def load_projects(config_path: str) -> list[Project]:
     return projects
 
 
-def compute_monthly_unassigned_days(schedule: Schedule) -> pd.DataFrame:
+def compute_monthly_unassigned_days(
+    schedule: Schedule, include_zero_months: bool = False
+) -> pd.DataFrame:
     """Compute the number of unassigned days per month.
 
     Args:
         schedule: Schedule object to analyze
+        include_zero_months: Include months with 0 unassigned days
 
     Returns:
         DataFrame with columns: year, month, month_name, unassigned_days
-        Only includes months that have at least one unassigned day
+        By default, only includes months with at least one unassigned day
     """
     if not schedule.slots:
         return pd.DataFrame(columns=["year", "month", "month_name", "unassigned_days"])
@@ -102,7 +105,34 @@ def compute_monthly_unassigned_days(schedule: Schedule) -> pd.DataFrame:
                 }
             )
 
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+    if not include_zero_months:
+        return df
+
+    # Include all months in the schedule range, filling missing with 0.
+    start = schedule.start_date or min(s.date for s in schedule.slots)
+    end = schedule.end_date or max(s.date for s in schedule.slots)
+    month_starts = pd.date_range(
+        start=date(start.year, start.month, 1),
+        end=date(end.year, end.month, 1),
+        freq="MS",
+    )
+    all_months = pd.DataFrame(
+        {
+            "year": month_starts.year,
+            "month": month_starts.month,
+        }
+    )
+    all_months["month_name"] = month_starts.strftime("%B %Y")
+
+    if df.empty:
+        all_months["unassigned_days"] = 0
+        return all_months
+
+    merged = all_months.merge(df, on=["year", "month"], how="left", suffixes=("", "_y"))
+    merged["unassigned_days"] = merged["unassigned_days"].fillna(0).astype(int)
+    merged = merged[["year", "month", "month_name", "unassigned_days"]]
+    return merged
 
 
 def compute_weekly_availability(schedule: Schedule, num_weeks: int) -> list[dict]:

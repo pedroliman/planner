@@ -72,7 +72,7 @@ Let's run both approaches and compare them:
 ```{python}
 #| echo: true
 #| message: false
-#| warning: false
+#| warning: true
 
 from datetime import date
 import pandas as pd
@@ -96,17 +96,141 @@ start_date = date(2026, 1, 26)
 
 # Load and schedule
 projects = load_projects(CONFIG_FILE)
-scheduler = Scheduler(projects, start_date=start_date)
-schedule_paced = scheduler.create_schedule(num_weeks=NUM_WEEKS, method="paced")
-schedule_frontload = scheduler.create_schedule(num_weeks=NUM_WEEKS, method="frontload")
+scheduler_paced = Scheduler(projects, start_date=start_date)
+schedule_paced = scheduler_paced.create_schedule(num_weeks=NUM_WEEKS, method="paced")
+
+scheduler_frontload = Scheduler(projects, start_date=start_date)
+schedule_frontload = scheduler_frontload.create_schedule(num_weeks=NUM_WEEKS, method="frontload")
 
 # Get statistics
-stats_paced = scheduler.get_statistics(schedule_paced)
-stats_frontload = scheduler.get_statistics(schedule_frontload)
+stats_paced = scheduler_paced.get_statistics(schedule_paced)
+stats_frontload = scheduler_frontload.get_statistics(schedule_frontload)
 
 # Compute availability
 paced_availability = compute_weekly_availability(schedule_paced, NUM_WEEKS)
 frontload_availability = compute_weekly_availability(schedule_frontload, NUM_WEEKS)
+```
+
+```{python}
+#| echo: false
+#| warning: true
+
+import warnings
+
+def validate_budget_exhaustion(schedule, projects, label: str) -> pd.DataFrame:
+    rows = []
+    for project in projects:
+        budget_days = project.slots_remaining
+        if budget_days <= 0:
+            continue
+
+        assigned_dates = sorted([s.date for s in schedule.slots if s.project == project])
+        days_scheduled = len(assigned_dates)
+
+        exhausted_on = None
+        if days_scheduled >= budget_days:
+            exhausted_on = assigned_dates[budget_days - 1]
+
+        days_before_deadline = None
+        if exhausted_on is not None:
+            days_before_deadline = (project.end_date - exhausted_on).days
+
+        if (
+            schedule.end_date is not None
+            and project.end_date <= schedule.end_date
+            and days_scheduled < budget_days
+        ):
+            warnings.warn(
+                f"[{label}] Project '{project.name}' ended on {project.end_date} "
+                f"with {budget_days - days_scheduled} day(s) of budget remaining "
+                f"({days_scheduled}/{budget_days} scheduled).",
+                category=UserWarning,
+                stacklevel=2,
+            )
+
+        rows.append(
+            {
+                "project": project.name,
+                "end_date": project.end_date,
+                "budget_days": budget_days,
+                "days_scheduled": days_scheduled,
+                "exhausted_on": exhausted_on,
+                "days_before_deadline": days_before_deadline,
+            }
+        )
+
+    df = pd.DataFrame(rows).sort_values(["end_date", "project"])
+
+    total_budget_days = int(df["budget_days"].sum()) if not df.empty else 0
+    all_assigned_dates = sorted([s.date for s in schedule.slots if s.project is not None])
+    all_budget_exhausted_on = (
+        all_assigned_dates[total_budget_days - 1]
+        if total_budget_days > 0 and len(all_assigned_dates) >= total_budget_days
+        else None
+    )
+
+    if total_budget_days > 0 and all_budget_exhausted_on is None:
+        warnings.warn(
+            f"[{label}] Total budget across projects ({total_budget_days} day(s)) "
+            f"was not fully scheduled within the horizon.",
+            category=UserWarning,
+            stacklevel=2,
+        )
+
+    print(
+        f"[{label}] Total budget days: {total_budget_days}; "
+        f"total scheduled days: {len(all_assigned_dates)}; "
+        f"all budget exhausted on: {all_budget_exhausted_on}"
+    )
+
+    return df
+
+budget_paced = validate_budget_exhaustion(schedule_paced, scheduler_paced.projects, "paced")
+budget_frontload = validate_budget_exhaustion(schedule_frontload, scheduler_frontload.projects, "frontload")
+
+display(
+    budget_paced[
+        [
+            "project",
+            "end_date",
+            "budget_days",
+            "days_scheduled",
+            "exhausted_on",
+            "days_before_deadline",
+        ]
+    ].rename(
+        columns={
+            "project": "Project",
+            "end_date": "End Date",
+            "budget_days": "Budget Days",
+            "days_scheduled": "Days Scheduled",
+            "exhausted_on": "Budget Exhausted On",
+            "days_before_deadline": "Days Before Deadline",
+        }
+    )
+)
+
+display(
+    budget_frontload[
+        [
+            "project",
+            "end_date",
+            "budget_days",
+            "days_scheduled",
+            "exhausted_on",
+            "days_before_deadline",
+        ]
+    ].rename(
+        columns={
+            "project": "Project",
+            "end_date": "End Date",
+            "budget_days": "Budget Days",
+            "days_scheduled": "Days Scheduled",
+            "exhausted_on": "Budget Exhausted On",
+            "days_before_deadline": "Days Before Deadline",
+        }
+    )
+)
 ```
 
 
@@ -114,7 +238,7 @@ frontload_availability = compute_weekly_availability(schedule_frontload, NUM_WEE
 
 The paced schedule looks pretty realistic to me, and makes sense. I iterated a bit to get it to work the way I wanted.
 
-Briefly, this scheduling algorithm builds a schedule by assigning days to projects based on a target "ideal days per week" computed from each project's remaining work divided by time until its deadline. Each project has a weekly cap set to the floor of that ideal, with fractional leftovers accumulating - this effectively assigns a day to a project only when I can actually work a full day on it. Fair. Among projects still under their weekly cap, we prioritize projects with earlier deadlines. Weekly tallies reset every Monday, weekends are skipped, and days can remain unassigned if no project is eligible.
+Briefly, the paced scheduler uses a simple pacing “credit” model: each active project accrues fractional credit every working day at a constant rate chosen so that (if capacity allows) it burns down its remaining days close to its end date, not months early. We only schedule projects that have accumulated enough credit (i.e., they’re “due” for work), and we also apply deadline-feasibility guards so that projects that would otherwise miss their end date get forced to run as needed. Weekends are skipped, and days can remain unassigned if no project is currently due.
 
 For my projects, it works out this way:
 
@@ -133,10 +257,11 @@ if fig_paced_cal:
 #| label: tbl-paced-unassigned
 #| tbl-cap: "Unassigned days per month (Paced Method)"
 
-unassigned_paced = compute_monthly_unassigned_days(schedule_paced)
+unassigned_paced = compute_monthly_unassigned_days(schedule_paced, include_zero_months=True)
+unassigned_paced["cumulative_unassigned_days"] = unassigned_paced["unassigned_days"].cumsum()
 if not unassigned_paced.empty:
-    display(unassigned_paced[['month_name', 'unassigned_days']].rename(
-        columns={'month_name': 'Month', 'unassigned_days': 'Unassigned Days'}
+    display(unassigned_paced[['month_name', 'unassigned_days', 'cumulative_unassigned_days']].rename(
+        columns={'month_name': 'Month', 'unassigned_days': 'Unassigned Days', 'cumulative_unassigned_days': 'Cumulative Unassigned Days'}
     ))
 ```
 
@@ -163,10 +288,11 @@ if fig_frontload_cal:
 #| label: tbl-frontload-unassigned
 #| tbl-cap: "Unassigned days per month (Frontload Method)"
 
-unassigned_frontload = compute_monthly_unassigned_days(schedule_frontload)
+unassigned_frontload = compute_monthly_unassigned_days(schedule_frontload, include_zero_months=True)
+unassigned_frontload["cumulative_unassigned_days"] = unassigned_frontload["unassigned_days"].cumsum()
 if not unassigned_frontload.empty:
-    display(unassigned_frontload[['month_name', 'unassigned_days']].rename(
-        columns={'month_name': 'Month', 'unassigned_days': 'Unassigned Days'}
+    display(unassigned_frontload[['month_name', 'unassigned_days', 'cumulative_unassigned_days']].rename(
+        columns={'month_name': 'Month', 'unassigned_days': 'Unassigned Days', 'cumulative_unassigned_days': 'Cumulative Unassigned Days'}
     ))
 ```
 

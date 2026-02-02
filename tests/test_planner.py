@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from planner.models import Project, ScheduledSlot, Schedule
+from planner.models import Project, Schedule, ScheduledSlot
 from planner.scheduler import Scheduler
 
 # Note: Visualization functions have been moved to schedule.qmd Quarto document
@@ -162,8 +162,18 @@ class TestScheduler:
         for slot in schedule.slots:
             assert slot.date.weekday() < 5  # Monday-Friday
 
+    def test_warns_when_project_ends_with_budget_remaining(self):
+        """Test that we warn when a project reaches its end date with work remaining."""
+        projects = [
+            Project("Impossible", date(2024, 11, 8), 10),  # 5 workdays available
+        ]
+        scheduler = Scheduler(projects, start_date=date(2024, 11, 4))  # Monday
+
+        with pytest.warns(UserWarning, match=r"ended on"):
+            scheduler.create_schedule(num_weeks=2, method="paced")
+
     def test_schedule_assigns_all_work(self):
-        """Test that all work gets assigned when possible."""
+        """Test that paced scheduling does not exhaust far-off work immediately."""
         projects = [
             Project("Small", date(2024, 12, 31), 2),
         ]
@@ -171,8 +181,8 @@ class TestScheduler:
         schedule = scheduler.create_schedule(num_weeks=4)
 
         project_slots = schedule.get_project_slots(projects[0])
-        # 2 days = 2 slots should be assigned
-        assert len(project_slots) == 2
+        # With a far-off deadline, paced scheduling should defer most of the work.
+        assert len(project_slots) == 1
 
     def test_schedule_proportional_distribution(self):
         """Test that projects get slots proportional to remaining work."""
@@ -188,7 +198,7 @@ class TestScheduler:
 
         # Big project has 4x the work, should get approximately 4x the slots
         # Allow some variance due to scheduling algorithm
-        ratio = big_slots / small_slots if small_slots > 0 else float('inf')
+        ratio = big_slots / small_slots if small_slots > 0 else float("inf")
         assert 2.0 <= ratio <= 6.0  # Reasonably proportional
 
     def test_schedule_two_week_rule(self):
@@ -204,8 +214,7 @@ class TestScheduler:
         # Check each project
         for project in projects:
             project_slots = sorted(
-                schedule.get_project_slots(project),
-                key=lambda s: s.date
+                schedule.get_project_slots(project), key=lambda s: s.date
             )
 
             if len(project_slots) >= 2:
@@ -232,7 +241,6 @@ class TestScheduler:
         assert stat.project == projects[0]
         assert stat.total_slots_assigned > 0
         assert stat.days_per_week > 0
-
 
 
 # NOTE: The following visualization tests have been commented out because
@@ -327,12 +335,12 @@ class TestIntegration:
     def test_fractional_day_scheduling(self):
         """Test that fractional days are handled (rounded down to slots)."""
         projects = [
-            Project("Big", date(2024, 12, 31), 20),
+            Project("Big", date(2024, 12, 31), 5),
             Project("Tiny", date(2024, 12, 31), 2.5),  # 2.5 days = 2 slots
         ]
 
         scheduler = Scheduler(projects, start_date=date(2024, 11, 4))
-        schedule = scheduler.create_schedule(num_weeks=4)
+        schedule = scheduler.create_schedule(num_weeks=4, method="frontload")
 
         tiny_slots = schedule.get_project_slots(projects[1])
         # Should have 2 slots (int(2.5) = 2)
@@ -393,7 +401,9 @@ class TestSchedulingMethods:
         # Ideal: 5 / 8.14 = 0.61 days/week, floor = 0
         # Will accumulate: 0.61 * 4 = 2.44, so 2 days over 4 weeks
         active_slots = schedule.get_project_slots(projects[1])
-        assert 2 <= len(active_slots) <= 4, f"Expected 2-4 slots, got {len(active_slots)}"
+        assert 2 <= len(active_slots) <= 4, (
+            f"Expected 2-4 slots, got {len(active_slots)}"
+        )
 
     def test_multiple_fractional_day_projects(self):
         """Test scheduling with multiple projects having fractional days."""
@@ -435,21 +445,31 @@ class TestSchedulingMethods:
         schedule = scheduler.create_schedule(num_weeks=8, method="frontload")
 
         # Get slots for each project sorted by date
-        first_slots = sorted(schedule.get_project_slots(projects[0]), key=lambda s: s.date)
-        second_slots = sorted(schedule.get_project_slots(projects[1]), key=lambda s: s.date)
-        third_slots = sorted(schedule.get_project_slots(projects[2]), key=lambda s: s.date)
+        first_slots = sorted(
+            schedule.get_project_slots(projects[0]), key=lambda s: s.date
+        )
+        second_slots = sorted(
+            schedule.get_project_slots(projects[1]), key=lambda s: s.date
+        )
+        third_slots = sorted(
+            schedule.get_project_slots(projects[2]), key=lambda s: s.date
+        )
 
         # First project should end before second project starts
         if first_slots and second_slots:
             last_first = first_slots[-1].date
             first_second = second_slots[0].date
-            assert last_first <= first_second, "Frontload should finish First before starting Second"
+            assert last_first <= first_second, (
+                "Frontload should finish First before starting Second"
+            )
 
         # Second project should end before third project starts
         if second_slots and third_slots:
             last_second = second_slots[-1].date
             first_third = third_slots[0].date
-            assert last_second <= first_third, "Frontload should finish Second before starting Third"
+            assert last_second <= first_third, (
+                "Frontload should finish Second before starting Third"
+            )
 
     def test_paced_method_distributes_work(self):
         """Test that paced method distributes work across the schedule."""
@@ -474,7 +494,9 @@ class TestSchedulingMethods:
         a_starts_early = any(slot.date <= first_week_end for slot in a_slots)
         b_starts_early = any(slot.date <= first_week_end for slot in b_slots)
 
-        assert a_starts_early and b_starts_early, "Paced method should start both projects early"
+        assert a_starts_early and b_starts_early, (
+            "Paced method should start both projects early"
+        )
 
     def test_invalid_scheduling_method(self):
         """Test that invalid scheduling method raises error."""
@@ -578,7 +600,9 @@ class TestProjectRenewal:
         )
 
         scheduler = Scheduler([base_project], start_date=date(2024, 11, 1))
-        schedule = scheduler.create_schedule(num_weeks=4, method="paced")  # Short horizon
+        schedule = scheduler.create_schedule(
+            num_weeks=4, method="paced"
+        )  # Short horizon
 
         # Renewal should not be created
         renewal_projects = [p for p in scheduler.projects if p.is_renewal]
@@ -599,8 +623,14 @@ class TestProjectRenewal:
         schedule = scheduler.create_schedule(num_weeks=52, method="paced")
 
         # Check that both base and renewal got scheduled
-        base_slots = [s for s in schedule.slots if s.project and s.project.name == "Quick"]
-        renewal_slots = [s for s in schedule.slots if s.project and s.project.name == "Quick (Renewal)"]
+        base_slots = [
+            s for s in schedule.slots if s.project and s.project.name == "Quick"
+        ]
+        renewal_slots = [
+            s
+            for s in schedule.slots
+            if s.project and s.project.name == "Quick (Renewal)"
+        ]
 
         assert len(base_slots) >= 1  # 1 day = 1 slot
         assert len(renewal_slots) >= 2  # 2 days = 2 slots
@@ -637,7 +667,7 @@ class TestEDDPrioritization:
 
         # Get first few slots for each project to see which starts earlier
         early_slots = schedule.get_project_slots(projects[1])  # Early deadline
-        late_slots = schedule.get_project_slots(projects[0])   # Late deadline
+        late_slots = schedule.get_project_slots(projects[0])  # Late deadline
 
         # Early deadline project should start first or have similar start
         if early_slots and late_slots:
@@ -658,9 +688,15 @@ class TestEDDPrioritization:
         schedule = scheduler.create_schedule(num_weeks=12, method="frontload")
 
         # Get slots for each project
-        early_slots = sorted(schedule.get_project_slots(projects[1]), key=lambda s: s.date)
-        middle_slots = sorted(schedule.get_project_slots(projects[2]), key=lambda s: s.date)
-        late_slots = sorted(schedule.get_project_slots(projects[0]), key=lambda s: s.date)
+        early_slots = sorted(
+            schedule.get_project_slots(projects[1]), key=lambda s: s.date
+        )
+        middle_slots = sorted(
+            schedule.get_project_slots(projects[2]), key=lambda s: s.date
+        )
+        late_slots = sorted(
+            schedule.get_project_slots(projects[0]), key=lambda s: s.date
+        )
 
         # In frontload with EDD, Early should complete before Middle, Middle before Late
         if early_slots and middle_slots:
@@ -762,7 +798,7 @@ class TestImportFunctionality:
 
     def test_import_config_defaults(self):
         """Test loading default import configuration."""
-        from planner.importer import load_import_config, DEFAULT_IMPORT_CONFIG
+        from planner.importer import DEFAULT_IMPORT_CONFIG, load_import_config
 
         config = load_import_config("nonexistent_config.json")
 
@@ -863,8 +899,16 @@ class TestImportFunctionality:
 
         # Mixed operations
         new_projects = [
-            {"name": "Existing", "end_date": "2024-12-31", "remaining_days": 15},  # Update
-            {"name": "Unchanged", "end_date": "2024-11-30", "remaining_days": 5},  # Unchanged
+            {
+                "name": "Existing",
+                "end_date": "2024-12-31",
+                "remaining_days": 15,
+            },  # Update
+            {
+                "name": "Unchanged",
+                "end_date": "2024-11-30",
+                "remaining_days": 5,
+            },  # Unchanged
             {"name": "New", "end_date": "2024-10-31", "remaining_days": 3},  # Add
         ]
 
@@ -955,7 +999,9 @@ class TestWeeklyAllocationLimits:
             # Ideal days/week: 10 / 8.14 = 1.23, floor = 1 day/week
             # With accumulation, could be 2 some weeks
             for week, count in weeks.items():
-                assert count <= 3, f"Project {project.name} exceeded weekly limit in week {week}: {count} days"
+                assert count <= 3, (
+                    f"Project {project.name} exceeded weekly limit in week {week}: {count} days"
+                )
 
     def test_weekly_allocation_with_large_project(self):
         """Test weekly allocation limits with unequal project sizes."""
@@ -980,7 +1026,9 @@ class TestWeeklyAllocationLimits:
         # Ideal: 30 / 8.14 = 3.68 days/week, floor = 3 days/week
         # Should not exceed 5 days/week even with accumulation
         for week, count in weeks.items():
-            assert count <= 5, f"Large project exceeded reasonable weekly limit in week {week}: {count} days"
+            assert count <= 5, (
+                f"Large project exceeded reasonable weekly limit in week {week}: {count} days"
+            )
 
     def test_continuity_with_multiple_projects(self):
         """Test continuity with multiple projects ensures fair distribution."""
@@ -1007,7 +1055,9 @@ class TestWeeklyAllocationLimits:
                 date_range = (dates[-1] - dates[0]).days
                 # With continuity, should still span some time (not all in one week)
                 if len(project_slots) > 10:  # Projects with more than 5 days
-                    assert date_range > 7, f"{project.name} should span more than a week"
+                    assert date_range > 7, (
+                        f"{project.name} should span more than a week"
+                    )
 
     def test_continuity_resets_on_weekends(self):
         """Test that continuity is reset on weekends."""
@@ -1024,6 +1074,28 @@ class TestWeeklyAllocationLimits:
 
         # Weekend should act as natural break in continuity
         # This is implicitly tested by the algorithm
+
+
+class TestPacedSchedulePacing:
+    def test_long_project_finishes_near_deadline(self):
+        """A long, low-budget project should not be consumed months early."""
+        imabc = Project(
+            name="IMABC",
+            start_date=date(2026, 2, 1),
+            end_date=date(2027, 2, 1),
+            remaining_days=26,
+            priority=1,
+        )
+
+        scheduler = Scheduler([imabc], start_date=date(2026, 1, 26))
+        schedule = scheduler.create_schedule(num_weeks=104, method="paced")
+
+        slots = schedule.get_project_slots(imabc)
+        assert len(slots) == 26
+
+        last_date = max(s.date for s in slots)
+        assert last_date <= imabc.end_date
+        assert last_date >= imabc.end_date - timedelta(weeks=8)
 
 
 # class TestAvailabilityPlot:

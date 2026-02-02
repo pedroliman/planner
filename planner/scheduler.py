@@ -1,5 +1,6 @@
 """Project scheduling algorithm."""
 
+import warnings
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
@@ -40,6 +41,7 @@ class Scheduler:
 
     # Maximum gap between working on the same project (in slots, 2 weeks = 14 slots)
     MAX_GAP_SLOTS = 14  # 14 days * 1 slot per day
+    WORKDAYS_PER_WEEK = 5
 
     def __init__(self, projects: list[Project], start_date: Optional[date] = None):
         """Initialize the scheduler.
@@ -119,6 +121,22 @@ class Scheduler:
             return {p: 0.0 for p in remaining_work}
 
         return {p: r / total_remaining for p, r in remaining_work.items()}
+
+    @staticmethod
+    def _count_weekdays_inclusive(start: date, end: date) -> int:
+        """Count weekdays between start and end dates (inclusive)."""
+        if end < start:
+            return 0
+
+        total_days = (end - start).days + 1
+        full_weeks, remainder = divmod(total_days, 7)
+
+        weekdays = full_weeks * 5
+        start_weekday = start.weekday()
+        for i in range(remainder):
+            if (start_weekday + i) % 7 < 5:
+                weekdays += 1
+        return weekdays
 
     def _get_most_urgent_project(
         self,
@@ -243,11 +261,11 @@ class Scheduler:
             )
 
     def _create_schedule_paced(self, num_weeks: int = 52) -> Schedule:
-        """Create a paced schedule with weekly allocation limits.
+        """Create a paced schedule with a truly paced "token bucket" allocator.
 
-        This method calculates ideal days per week for each project and assigns
-        no more than floor(ideal_days_per_week) days per week. Projects accumulate
-        fractional allocations until they can be assigned.
+        Each project accrues fractional "credit" every working day at a constant
+        rate chosen so that (if capacity allows) the project completes all of its
+        remaining days near its end date rather than prematurely.
 
         Args:
             num_weeks: Number of weeks to plan ahead
@@ -263,18 +281,27 @@ class Scheduler:
         all_projects = self._generate_renewal_projects(num_weeks)
         self.projects = all_projects  # Update projects list
 
-        # Track remaining work for each project (in days)
-        remaining_work = {p: p.remaining_days for p in self.projects}
+        # Track remaining work for each project (in full-day slots)
+        remaining_work: dict[Project, int] = {
+            p: p.slots_remaining for p in self.projects
+        }
 
-        # Track weekly allocations for each project
-        weekly_allocations: dict[Project, int] = {p: 0 for p in self.projects}
-
-        # Track accumulated fractional days for each project
-        accumulated_days: dict[Project, float] = {p: 0.0 for p in self.projects}
+        # Pacing credits: accrue at a constant rate so completion lands near end_date.
+        pacing_credit: dict[Project, float] = {p: 0.0 for p in self.projects}
+        pacing_rate: dict[Project, float] = {}
+        for project in self.projects:
+            effective_start = project.start_date or self.start_date
+            total_workdays = self._count_weekdays_inclusive(
+                max(self.start_date, effective_start),
+                project.end_date,
+            )
+            if remaining_work[project] <= 0 or total_workdays <= 0:
+                pacing_rate[project] = 0.0
+            else:
+                pacing_rate[project] = remaining_work[project] / float(total_workdays)
 
         # Generate slots for each day
         num_days = num_weeks * 7
-        current_week_start = self.start_date
 
         for day_offset in range(num_days):
             current_date = self.start_date + timedelta(days=day_offset)
@@ -283,113 +310,161 @@ class Scheduler:
             if current_date.weekday() >= 5:
                 continue
 
-            # Check if we've started a new week (Monday)
-            if current_date.weekday() == 0 and current_date != current_week_start:
-                # Reset weekly allocations
-                current_week_start = current_date
-                weekly_allocations = {p: 0 for p in self.projects}
+            # Accrue pacing credits for active projects.
+            for project in self.projects:
+                if remaining_work[project] <= 0:
+                    continue
+                if project.start_date is not None and current_date < project.start_date:
+                    continue
+                if current_date > project.end_date:
+                    continue
+                pacing_credit[project] += pacing_rate[project]
 
             # Create one slot per day
             slot = ScheduledSlot(date=current_date)
 
             # Find the best project for this slot
             project = self._get_paced_project(
-                current_date,
-                remaining_work,
-                weekly_allocations,
-                accumulated_days,
+                current_date, remaining_work, pacing_credit
             )
 
             if project:
                 slot.project = project
                 remaining_work[project] -= 1
-                weekly_allocations[project] += 1
-                # Reset accumulation when project is assigned
-                accumulated_days[project] = 0.0
+                pacing_credit[project] -= 1.0
 
             schedule.slots.append(slot)
 
+        self._warn_if_projects_missed_budget_by_deadline(
+            schedule=schedule, remaining_work=remaining_work, method="paced"
+        )
         return schedule
+
+    def _warn_if_projects_missed_budget_by_deadline(
+        self, schedule: Schedule, remaining_work: dict[Project, int], method: str
+    ) -> None:
+        """Warn when a project reaches its end date with budget remaining.
+
+        This helps surface infeasible schedules (or bugs) when rendering `schedule.qmd`.
+        Only projects whose end dates are within the schedule horizon are checked.
+        """
+        if schedule.end_date is None:
+            return
+
+        for project in self.projects:
+            if project.end_date > schedule.end_date:
+                continue
+            remaining = remaining_work.get(project, 0)
+            if remaining <= 0:
+                continue
+
+            project_slots = schedule.get_project_slots(project)
+            last_scheduled = max((s.date for s in project_slots), default=None)
+            scheduled = project.slots_remaining - remaining
+
+            warnings.warn(
+                (
+                    f"[{method}] Project '{project.name}' ended on {project.end_date} "
+                    f"with {remaining} day(s) of budget remaining "
+                    f"({scheduled}/{project.slots_remaining} scheduled). "
+                    f"Last scheduled: {last_scheduled}."
+                ),
+                category=UserWarning,
+                stacklevel=2,
+            )
 
     def _get_paced_project(
         self,
         current_date: date,
-        remaining_work: dict[Project, float],
-        weekly_allocations: dict[Project, int],
-        accumulated_days: dict[Project, float],
+        remaining_work: dict[Project, int],
+        pacing_credit: dict[Project, float],
     ) -> Optional[Project]:
-        """Select the next project for paced scheduling with weekly limits.
+        """Select the next project for paced scheduling.
 
         Args:
             current_date: Current date being scheduled
-            remaining_work: Dict of remaining days per project
-            weekly_allocations: Dict of days allocated this week per project
-            accumulated_days: Dict of accumulated fractional days per project
+            remaining_work: Dict of remaining full-day slots per project
+            pacing_credit: Dict of accrued pacing credit per project
 
         Returns:
             Project to schedule, or None if no eligible project
         """
-        candidates = []
-
+        active: list[Project] = []
         for project, remaining in remaining_work.items():
             if remaining <= 0:
                 continue
-
-            # Skip projects that haven't started yet
             if project.start_date is not None and current_date < project.start_date:
                 continue
-
-            # Calculate remaining weeks for this project
-            days_until_deadline = (project.end_date - current_date).days
-            remaining_weeks = max(
-                days_until_deadline / 7.0, 0.1
-            )  # Avoid division by zero
-
-            # Calculate ideal days per week
-            ideal_days_per_week = remaining / remaining_weeks
-
-            # Maximum days that can be allocated per week (floor)
-            max_days_per_week = int(ideal_days_per_week)
-
-            # Add fractional part to accumulation
-            fractional_part = ideal_days_per_week - max_days_per_week
-            accumulated_days[project] += fractional_part
-
-            # If accumulated days >= 1, allow one extra day this week
-            if accumulated_days[project] >= 1.0:
-                max_days_per_week += 1
-
-            # High-priority projects get at least 1 day per week if they have remaining work
-            if project.priority > 0 and max_days_per_week < 1:
-                max_days_per_week = 1
-
-            # Check if this project has room in this week
-            if weekly_allocations[project] >= max_days_per_week:
+            if current_date > project.end_date:
                 continue
+            active.append(project)
 
-            # Calculate priority score
-            # Components:
-            # 1. Project priority (higher = more important)
-            # 2. EDD (earlier deadline = higher priority)
-            # 3. Allocation deficit (need to catch up)
-            priority_score = project.priority * 1000  # Highest weight
-            edd_score = -days_until_deadline
-
-            # Add urgency based on allocation deficit
-            current_allocation_rate = weekly_allocations[project]
-            allocation_deficit = ideal_days_per_week - current_allocation_rate
-
-            # Combined score (priority dominates, then EDD, then allocation)
-            score = priority_score + edd_score + allocation_deficit * 100
-
-            candidates.append((project, score))
-
-        if not candidates:
+        if not active:
             return None
 
-        # Sort by score (higher is better) and return best project
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        return candidates[0][0]
+        # Hard feasibility rule: if a project needs every remaining workday, do it now.
+        must_do: list[Project] = []
+        for project in active:
+            workdays_left = self._count_weekdays_inclusive(
+                current_date, project.end_date
+            )
+            if workdays_left > 0 and remaining_work[project] >= workdays_left:
+                must_do.append(project)
+
+        if must_do:
+            must_do.sort(
+                key=lambda p: (
+                    # Smallest slack first (most overdue / least flexibility)
+                    self._count_weekdays_inclusive(current_date, p.end_date)
+                    - remaining_work[p],
+                    p.end_date,
+                    -p.priority,
+                    p.name,
+                )
+            )
+            return must_do[0]
+
+        # Cumulative feasibility guard:
+        # If the remaining work due by some deadline D is >= the remaining available
+        # workdays until D, then we must spend today's slot on projects due by D.
+        deadlines = sorted({p.end_date for p in active})
+        forced_set: Optional[list[Project]] = None
+        for deadline in deadlines:
+            available = self._count_weekdays_inclusive(current_date, deadline)
+            if available <= 0:
+                continue
+            required = sum(remaining_work[p] for p in active if p.end_date <= deadline)
+            if required >= available:
+                forced_set = [p for p in active if p.end_date <= deadline]
+                break
+
+        if forced_set:
+            forced_set.sort(
+                key=lambda p: (
+                    self._count_weekdays_inclusive(current_date, p.end_date)
+                    - remaining_work[p],
+                    p.end_date,
+                    -p.priority,
+                    p.name,
+                )
+            )
+            return forced_set[0]
+
+        # Schedule projects that are behind pace (positive credit).
+        eligible = [p for p in active if pacing_credit.get(p, 0.0) > 1e-9]
+        if not eligible:
+            return None
+
+        # Prefer the most behind (highest credit), then earlier deadline, then higher priority.
+        eligible.sort(
+            key=lambda p: (
+                -pacing_credit.get(p, 0.0),
+                p.end_date,
+                -p.priority,
+                p.name,
+            )
+        )
+        return eligible[0]
 
     def _create_schedule_frontload(self, num_weeks: int = 52) -> Schedule:
         """Create a frontload schedule that concentrates work on projects.
@@ -454,6 +529,9 @@ class Scheduler:
 
             schedule.slots.append(slot)
 
+        self._warn_if_projects_missed_budget_by_deadline(
+            schedule=schedule, remaining_work=remaining_work, method="frontload"
+        )
         return schedule
 
     def get_statistics(self, schedule: Schedule) -> list[ProjectStats]:
