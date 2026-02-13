@@ -588,7 +588,7 @@ class TestProjectRenewal:
         assert renewal.remaining_days == 3
         assert renewal.parent_name == "Base"
         assert renewal.start_date == date(2024, 12, 1)  # Day after base ends
-        assert renewal.end_date == date(2024, 12, 1) + timedelta(days=365)
+        assert renewal.end_date == date(2024, 11, 30) + timedelta(days=365)  # One year from parent end_date
 
     def test_no_renewal_if_outside_horizon(self):
         """Test that renewals aren't created if they start after the planning horizon."""

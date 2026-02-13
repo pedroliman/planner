@@ -38,6 +38,7 @@ class Project:
     remaining_days: float  # Can be fractional for half-days
     start_date: Optional[date] = None
     renewal_days: Optional[float] = None
+    renewal_lag_days: Optional[int] = None
     is_renewal: bool = False
     parent_name: Optional[str] = None
     color: Optional[str] = None

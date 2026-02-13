@@ -85,11 +85,12 @@ class Scheduler:
                 # Assuming it starts immediately and takes remaining_days
                 project_completion = project.end_date
 
-                # Renewal starts right after project completion
-                renewal_start = project_completion + timedelta(days=1)
+                # Renewal starts after project completion, respecting renewal_lag_days
+                lag = project.renewal_lag_days or 0
+                renewal_start = project_completion + timedelta(days=1 + lag)
 
-                # Renewal lasts one year from start
-                renewal_end = renewal_start + timedelta(days=365)
+                # Renewal ends one year from the parent's end_date (regardless of lag)
+                renewal_end = project_completion + timedelta(days=365)
 
                 # Only create renewal if it starts within the planning horizon
                 if renewal_start <= schedule_end:
@@ -99,6 +100,7 @@ class Scheduler:
                         remaining_days=project.renewal_days,
                         start_date=renewal_start,
                         renewal_days=None,  # Renewals don't auto-renew
+                        renewal_lag_days=None,
                         is_renewal=True,
                         parent_name=project.name,
                         color=project.color,  # Use same color as parent

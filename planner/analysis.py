@@ -12,6 +12,45 @@ import plotly.graph_objects as go
 from planner.models import Project, Schedule
 
 
+def _hsl_to_rgb(hue: float, saturation: float, lightness: float) -> tuple[int, int, int]:
+    """Convert HSL color to RGB.
+
+    Args:
+        hue: Hue in degrees (0-360)
+        saturation: Saturation as percentage (0-100)
+        lightness: Lightness as percentage (0-100)
+
+    Returns:
+        Tuple of (R, G, B) integers (0-255)
+    """
+    h = hue / 60.0
+    s = saturation / 100.0
+    l = lightness / 100.0
+
+    c = (1 - abs(2 * l - 1)) * s
+    x = c * (1 - abs(h % 2 - 1))
+    m = l - c / 2
+
+    if h < 1:
+        r, g, b = c, x, 0
+    elif h < 2:
+        r, g, b = x, c, 0
+    elif h < 3:
+        r, g, b = 0, c, x
+    elif h < 4:
+        r, g, b = 0, x, c
+    elif h < 5:
+        r, g, b = x, 0, c
+    else:
+        r, g, b = c, 0, x
+
+    return (
+        int((r + m) * 255),
+        int((g + m) * 255),
+        int((b + m) * 255),
+    )
+
+
 def load_projects(config_path: str) -> list[Project]:
     """Load projects from JSON configuration file.
 
@@ -45,6 +84,10 @@ def load_projects(config_path: str) -> list[Project]:
         if "renewal_days" in p and p["renewal_days"]:
             renewal_days = float(p["renewal_days"])
 
+        renewal_lag_days = None
+        if "renewal_lag_days" in p and p["renewal_lag_days"] is not None:
+            renewal_lag_days = int(p["renewal_lag_days"])
+
         priority = 0
         if "priority" in p and p["priority"] is not None:
             priority = int(p["priority"])
@@ -55,6 +98,7 @@ def load_projects(config_path: str) -> list[Project]:
             remaining_days=float(p["remaining_days"]),
             start_date=start_date,
             renewal_days=renewal_days,
+            renewal_lag_days=renewal_lag_days,
             priority=priority,
             _color_index=i,
         )
@@ -212,33 +256,36 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
     Returns:
         Plotly Figure object or None if no data
     """
-    # Build a mapping of dates to projects
+    # Build a mapping of dates to projects and collect project end_dates
     date_to_project = {}
-    all_projects = set()
+    project_info = {}  # project_name -> Project object
 
     for slot in schedule.slots:
         if slot.project:
             date_to_project[slot.date] = slot.project.name
-            all_projects.add(slot.project.name)
+            if slot.project.name not in project_info:
+                project_info[slot.project.name] = slot.project
 
-    # Get unique project names and assign them numeric values
-    project_names = sorted(list(all_projects))
+    # Sort projects by end_date, then by name for stability
+    sorted_projects = sorted(
+        project_info.items(),
+        key=lambda x: (x[1].end_date, x[0])
+    )
+    project_names = [name for name, _ in sorted_projects]
     project_to_num = {name: i for i, name in enumerate(project_names)}
 
-    # Modern, vibrant color palette for light theme
-    modern_colors = [
-        "#10b981",  # emerald
-        "#3b82f6",  # blue
-        "#8b5cf6",  # purple
-        "#f59e0b",  # amber
-        "#ef4444",  # red
-        "#06b6d4",  # cyan
-        "#ec4899",  # pink
-        "#14b8a6",  # teal
-        "#f97316",  # orange
-        "#6366f1",  # indigo
-    ]
-    colors = [modern_colors[i % len(modern_colors)] for i in range(len(project_names))]
+    # Generate divergent colors by spreading projects around the color wheel
+    # This ensures nearby end_dates get visually different colors
+    num_projects = len(project_names)
+    colors = []
+    for i in range(num_projects):
+        # Use HSL color space, spread hue across 0-360 degrees
+        hue = (i * 360 / max(num_projects, 1)) % 360
+        # Use 65% saturation and 45% lightness for vibrant but readable colors
+        # Convert HSL to hex (using standard HSL to RGB conversion)
+        rgb = _hsl_to_rgb(hue, 65, 45)
+        hex_color = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+        colors.append(hex_color)
 
     # Build data for plotly
     dates = sorted(schedule.get_unique_dates())
@@ -429,7 +476,7 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
 def create_availability_plot(
     paced_availability: list[dict], frontload_availability: list[dict]
 ) -> go.Figure:
-    """Create weekly availability comparison plot with smoothing.
+    """Create weekly coverage comparison plot with smoothing.
 
     Args:
         paced_availability: Weekly availability stats for paced method
@@ -440,9 +487,9 @@ def create_availability_plot(
     """
     fig = go.Figure()
 
-    # Paced method - calculate smoothed values with 3-week moving average
+    # Paced method - convert to coverage and calculate smoothed values
     paced_dates = [w["start_date"] for w in paced_availability]
-    paced_percents = [w["percent_available"] for w in paced_availability]
+    paced_percents = [100 - w["percent_available"] for w in paced_availability]
 
     # Create pandas series for smoothing
     paced_series = pd.Series(paced_percents)
@@ -459,13 +506,13 @@ def create_availability_plot(
             line=dict(
                 color="#3b82f6", width=3, shape="spline", smoothing=1.0
             ),  # Modern blue with spline smoothing
-            hovertemplate="%{x|%b %d, %Y}<br>Available: %{y:.1f}%<extra></extra>",
+            hovertemplate="%{x|%b %d, %Y}<br>Coverage: %{y:.1f}%<extra></extra>",
         )
     )
 
-    # Frontload method - calculate smoothed values with 3-week moving average
+    # Frontload method - convert to coverage and calculate smoothed values
     frontload_dates = [w["start_date"] for w in frontload_availability]
-    frontload_percents = [w["percent_available"] for w in frontload_availability]
+    frontload_percents = [100 - w["percent_available"] for w in frontload_availability]
 
     # Create pandas series for smoothing
     frontload_series = pd.Series(frontload_percents)
@@ -482,7 +529,7 @@ def create_availability_plot(
             line=dict(
                 color="#f59e0b", width=3, shape="spline", smoothing=1.0
             ),  # Modern amber with spline smoothing
-            hovertemplate="%{x|%b %d, %Y}<br>Available: %{y:.1f}%<extra></extra>",
+            hovertemplate="%{x|%b %d, %Y}<br>Coverage: %{y:.1f}%<extra></extra>",
         )
     )
 
@@ -508,13 +555,12 @@ def create_availability_plot(
 
     fig.update_layout(
         title=dict(
-            text="Weekly Availability Percentage",
+            text="Weekly Coverage Percentage",
             font=dict(size=20, family="Inter, sans-serif", color="#111827"),
         ),
         xaxis_title="",
-        yaxis_title="Availability (%)",
+        yaxis_title="Coverage (%)",
         hovermode="x unified",
-        width=1400,
         height=450,
         plot_bgcolor="white",
         paper_bgcolor="white",
@@ -542,6 +588,7 @@ def create_availability_plot(
             font=dict(size=12),
         ),
         margin=dict(l=60, r=40, t=80, b=80),
+        autosize=True,
     )
 
     return fig

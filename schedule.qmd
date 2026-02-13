@@ -89,10 +89,10 @@ from planner.analysis import (
 
 # Configuration
 CONFIG_FILE = "projects.json"
-NUM_WEEKS = 104
+NUM_WEEKS = 52
 
 # Set date to when data was updated
-start_date = date(2026, 1, 26)
+start_date = date(2026, 2, 9)
 
 # Load and schedule
 projects = load_projects(CONFIG_FILE)
