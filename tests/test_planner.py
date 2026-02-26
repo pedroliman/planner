@@ -1269,3 +1269,156 @@ class TestPacedSchedulePacing:
 
 #         # Later weeks should have more availability in frontload
 #         assert frontload_late >= frontload_early
+
+
+class TestProbabilityFiltering:
+    """Tests for probability-based project filtering."""
+
+    def test_project_creation_with_probability(self):
+        """Test that Project can be created with probability field."""
+        project = Project(
+            name="Test Project",
+            end_date=date(2024, 12, 31),
+            remaining_days=10,
+            probability=0.8,
+        )
+        assert project.probability == 0.8
+
+    def test_project_default_probability(self):
+        """Test that Project defaults to probability 1.0."""
+        project = Project(
+            name="Test Project",
+            end_date=date(2024, 12, 31),
+            remaining_days=10,
+        )
+        assert project.probability == 1.0
+
+    def test_filter_projects_by_probability_basic(self):
+        """Test basic filtering by probability threshold."""
+        from planner.analysis import filter_projects_by_probability
+
+        projects = [
+            Project("Active", date(2024, 12, 31), 10, probability=1.0),
+            Project("Likely", date(2024, 12, 31), 10, probability=0.9),
+            Project("Maybe", date(2024, 12, 31), 10, probability=0.5),
+            Project("Unlikely", date(2024, 12, 31), 10, probability=0.2),
+        ]
+
+        # Filter at 0.8 threshold
+        filtered = filter_projects_by_probability(projects, 0.8)
+        assert len(filtered) == 2
+        assert filtered[0].name == "Active"
+        assert filtered[1].name == "Likely"
+
+    def test_filter_projects_by_probability_threshold_zero(self):
+        """Test filtering with threshold of 0 includes all projects."""
+        from planner.analysis import filter_projects_by_probability
+
+        projects = [
+            Project("A", date(2024, 12, 31), 10, probability=1.0),
+            Project("B", date(2024, 12, 31), 10, probability=0.5),
+            Project("C", date(2024, 12, 31), 10, probability=0.1),
+        ]
+
+        filtered = filter_projects_by_probability(projects, 0.0)
+        assert len(filtered) == 3
+
+    def test_filter_projects_by_probability_threshold_one(self):
+        """Test filtering with threshold of 1.0 includes only probability=1 projects."""
+        from planner.analysis import filter_projects_by_probability
+
+        projects = [
+            Project("Active1", date(2024, 12, 31), 10, probability=1.0),
+            Project("Active2", date(2024, 12, 31), 10, probability=1.0),
+            Project("Likely", date(2024, 12, 31), 10, probability=0.9),
+        ]
+
+        filtered = filter_projects_by_probability(projects, 1.0)
+        assert len(filtered) == 2
+        assert all(p.probability == 1.0 for p in filtered)
+
+    def test_filter_projects_empty_list(self):
+        """Test filtering with empty project list."""
+        from planner.analysis import filter_projects_by_probability
+
+        filtered = filter_projects_by_probability([], 0.8)
+        assert len(filtered) == 0
+
+    def test_load_projects_with_probability(self, tmp_path):
+        """Test loading projects from JSON with probability field."""
+        from planner.analysis import load_projects
+
+        config = {
+            "projects": [
+                {
+                    "name": "Active Project",
+                    "end_date": "2024-12-31",
+                    "remaining_days": 10,
+                    "probability": 1.0,
+                },
+                {
+                    "name": "Proposal",
+                    "end_date": "2024-12-31",
+                    "remaining_days": 15,
+                    "probability": 0.6,
+                },
+            ]
+        }
+
+        config_file = tmp_path / "test_config.json"
+        with open(config_file, "w") as f:
+            json.dump(config, f)
+
+        projects = load_projects(str(config_file))
+        assert len(projects) == 2
+        assert projects[0].probability == 1.0
+        assert projects[1].probability == 0.6
+
+    def test_load_projects_without_probability(self, tmp_path):
+        """Test loading projects from JSON without probability field defaults to 1.0."""
+        from planner.analysis import load_projects
+
+        config = {
+            "projects": [
+                {
+                    "name": "Project A",
+                    "end_date": "2024-12-31",
+                    "remaining_days": 10,
+                }
+            ]
+        }
+
+        config_file = tmp_path / "test_config.json"
+        with open(config_file, "w") as f:
+            json.dump(config, f)
+
+        projects = load_projects(str(config_file))
+        assert len(projects) == 1
+        assert projects[0].probability == 1.0
+
+    def test_scheduler_with_filtered_projects(self):
+        """Test that scheduler works correctly with filtered projects."""
+        from planner.analysis import filter_projects_by_probability
+
+        projects = [
+            Project("High Priority", date(2024, 2, 28), 5, probability=1.0),
+            Project("Medium Priority", date(2024, 3, 15), 8, probability=0.9),
+            Project("Low Priority", date(2024, 3, 31), 10, probability=0.3),
+        ]
+
+        # Filter at 0.8 threshold
+        filtered = filter_projects_by_probability(projects, 0.8)
+        assert len(filtered) == 2
+
+        # Create schedule with filtered projects
+        start = date(2024, 1, 1)
+        scheduler = Scheduler(filtered, start_date=start)
+        schedule = scheduler.create_schedule(num_weeks=12, method="paced")
+
+        # Verify only filtered projects appear in schedule
+        scheduled_projects = {slot.project for slot in schedule.slots if slot.project}
+        scheduled_names = {p.name for p in scheduled_projects}
+
+        assert "High Priority" in scheduled_names
+        assert "Medium Priority" in scheduled_names
+        assert "Low Priority" not in scheduled_names

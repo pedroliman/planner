@@ -22,9 +22,14 @@ uv sync
 source .venv/bin/activate
 quarto render schedule.qmd
 
+# Extract pending projects from CPOS form
+source .venv/bin/activate
+python -m osparse.extract_cpos_projects
+
 # Testing
 uv run pytest
 uv run pytest tests/test_planner.py::TestScheduler -v
+uv run pytest tests/test_osparse.py -v
 ```
 
 ## Architecture
@@ -66,6 +71,19 @@ Both methods:
 - Default 52-week planning horizon
 - Support project priorities (higher number = higher priority, default 0)
 
+### CPOS Integration (osparse)
+
+**osparse/extract_cpos_projects.py** extracts pending projects from NIH Current and Pending (Other) Support PDFs:
+- Finds most recent `cpos*.pdf` in root directory
+- Extracts projects with status = "Pending"
+- Calculates `remaining_days = 226 * (first year person months) / 12`
+- Updates `projects.json`:
+  - Keeps all active projects (no `probability` field)
+  - Updates existing pending projects (preserves `probability`)
+  - Adds new pending projects with `probability: 0.5`
+  - Removes pending projects not in CPOS
+- Saves Excel file with parsed CPOS data
+
 ### Configuration Format
 
 **projects.json**:
@@ -78,7 +96,8 @@ Both methods:
       "remaining_days": 15,
       "start_date": "2024-01-01",    // Optional
       "renewal_days": 5,               // Optional
-      "priority": 5                    // Optional (default 0, higher = more important)
+      "priority": 5,                   // Optional (default 0, higher = more important)
+      "probability": 0.5               // Optional (0.0-1.0, for pending projects)
     }
   ]
 }
@@ -90,6 +109,12 @@ Both methods:
 - Projects with higher priority are scheduled before lower priority projects
 - Priority takes precedence over EDD in both scheduling methods
 - Renewal projects inherit the priority from their parent project
+
+**Probability field** (for pending projects):
+- Optional float value (0.0-1.0) indicating likelihood of project being funded
+- Projects with `probability` field are considered "pending" (not yet active)
+- Active projects do not have a `probability` field
+- Default is 0.5 for new pending projects from CPOS extraction
 
 **Renewal logic**:
 - When `renewal_days` is set, creates renewal project after parent completes

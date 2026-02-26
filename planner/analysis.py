@@ -92,6 +92,10 @@ def load_projects(config_path: str) -> list[Project]:
         if "priority" in p and p["priority"] is not None:
             priority = int(p["priority"])
 
+        probability = 1.0
+        if "probability" in p and p["probability"] is not None:
+            probability = float(p["probability"])
+
         project = Project(
             name=p["name"],
             end_date=end_date,
@@ -100,11 +104,27 @@ def load_projects(config_path: str) -> list[Project]:
             renewal_days=renewal_days,
             renewal_lag_days=renewal_lag_days,
             priority=priority,
+            probability=probability,
             _color_index=i,
         )
         projects.append(project)
 
     return projects
+
+
+def filter_projects_by_probability(
+    projects: list[Project], min_probability: float
+) -> list[Project]:
+    """Filter projects by minimum probability threshold.
+
+    Args:
+        projects: List of Project objects to filter
+        min_probability: Minimum probability threshold (0-1)
+
+    Returns:
+        Filtered list of Project objects with probability >= min_probability
+    """
+    return [p for p in projects if p.probability >= min_probability]
 
 
 def compute_monthly_unassigned_days(
@@ -473,6 +493,246 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
     return fig
 
 
+def compute_weekly_project_allocation(schedule: Schedule, num_weeks: int) -> pd.DataFrame:
+    """Compute weekly project allocation percentages with smoothing.
+
+    Args:
+        schedule: Schedule object to analyze
+        num_weeks: Number of weeks to analyze
+
+    Returns:
+        DataFrame with columns: week_number, week_end_date, project_name, percent_allocated (smoothed)
+    """
+    if not schedule.start_date:
+        return pd.DataFrame()
+
+    # Build weekly allocation data
+    weekly_data = []
+    current_week_start = schedule.start_date
+
+    for week_num in range(num_weeks):
+        # Count slots per project in this week
+        project_slots = {}
+        total_slots = 0
+        last_weekday = current_week_start  # Track the last weekday in this week
+
+        # Iterate through each day in the week
+        for day_offset in range(7):
+            current_date = current_week_start + timedelta(days=day_offset)
+
+            # Skip weekends
+            if current_date.weekday() >= 5:
+                continue
+
+            # Update last weekday
+            last_weekday = current_date
+
+            # Count slots for this day
+            day_slots = schedule.get_slots_for_date(current_date)
+
+            if day_slots:
+                total_slots += 1
+                for slot in day_slots:
+                    if slot.project is not None:
+                        project_name = slot.project.name
+                        if project_name not in project_slots:
+                            project_slots[project_name] = 0
+                        project_slots[project_name] += 1
+            else:
+                # If no slots exist for this date, assume 1 unscheduled slot
+                total_slots += 1
+
+        # Convert to percentages
+        for project_name, count in project_slots.items():
+            percent = (count / total_slots * 100) if total_slots > 0 else 0.0
+            weekly_data.append({
+                "week_number": week_num,
+                "week_end_date": last_weekday,  # Use end of week for x-axis
+                "project_name": project_name,
+                "percent_allocated": percent,
+            })
+
+        # Move to next week
+        current_week_start += timedelta(weeks=1)
+
+    # Create DataFrame
+    df = pd.DataFrame(weekly_data)
+
+    if df.empty:
+        return df
+
+    # Apply 4-week rolling average smoothing per project (trailing average)
+    smoothed_data = []
+    for project_name in df["project_name"].unique():
+        project_df = df[df["project_name"] == project_name].copy()
+        project_df = project_df.sort_values("week_number")
+
+        # Create a series with all weeks (fill missing with 0)
+        all_weeks = pd.Series(0.0, index=range(num_weeks))
+        week_end_dates = {}
+        for _, row in project_df.iterrows():
+            all_weeks[row["week_number"]] = row["percent_allocated"]
+            week_end_dates[row["week_number"]] = row["week_end_date"]
+
+        # Apply trailing rolling average (looks at current week and 3 previous weeks)
+        # This prevents future data from leaking into the past
+        smoothed = all_weeks.rolling(window=4, center=False, min_periods=1).mean()
+
+        # Add back to dataframe - need to compute week_end_date for all weeks
+        current_week_start = schedule.start_date
+        for week_num in range(num_weeks):
+            # Calculate the last weekday of this week
+            week_end = current_week_start
+            for day_offset in range(7):
+                d = current_week_start + timedelta(days=day_offset)
+                if d.weekday() < 5:  # Weekday
+                    week_end = d
+
+            smoothed_data.append({
+                "week_number": week_num,
+                "week_end_date": week_end,
+                "project_name": project_name,
+                "percent_allocated": smoothed[week_num],
+            })
+            current_week_start += timedelta(weeks=1)
+
+    return pd.DataFrame(smoothed_data)
+
+
+def create_project_allocation_plot(schedule: Schedule, num_weeks: int) -> Optional[go.Figure]:
+    """Create stacked area plot showing weekly project allocation percentages.
+
+    Args:
+        schedule: Schedule object to visualize
+        num_weeks: Number of weeks to analyze
+
+    Returns:
+        Plotly Figure object or None if no data
+    """
+    # Get allocation data
+    df = compute_weekly_project_allocation(schedule, num_weeks)
+
+    if df.empty:
+        return None
+
+    # Calculate total allocation for first month (4 weeks) for each project
+    first_month_df = df[df["week_number"] < 4]
+    project_totals = first_month_df.groupby("project_name")["percent_allocated"].sum().sort_values(ascending=False)
+
+    # Order projects by first month allocation (descending, so largest will be at bottom of stack)
+    projects = project_totals.index.tolist()
+
+    dates = sorted(df["week_end_date"].unique())
+
+    # Generate colors using the same HSL approach as calendar heatmap
+    num_projects = len(projects)
+    colors = []
+    for i in range(num_projects):
+        hue = (i * 360 / max(num_projects, 1)) % 360
+        rgb = _hsl_to_rgb(hue, 65, 45)
+        hex_color = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+        colors.append(hex_color)
+
+    # Create figure
+    fig = go.Figure()
+
+    # Add each project as a stacked area (in reverse order so largest is at bottom)
+    for i, project_name in enumerate(reversed(projects)):
+        project_df = df[df["project_name"] == project_name].sort_values("week_end_date")
+        color_idx = len(projects) - 1 - i  # Reverse color index to match original colors
+
+        fig.add_trace(
+            go.Scatter(
+                x=project_df["week_end_date"],
+                y=project_df["percent_allocated"],
+                mode="lines",
+                name=project_name,
+                line=dict(width=0),
+                fillcolor=colors[color_idx],
+                stackgroup="one",
+                groupnorm="",  # Don't normalize, use raw percentages
+                hovertemplate=f"<b>{project_name}</b><br>%{{y:.1f}}%<extra></extra>",
+            )
+        )
+
+    # Create month boundaries for vertical lines
+    # Draw line at the first day of each month
+    if not dates:
+        return None
+
+    start_date = min(dates)
+    end_date = max(dates)
+
+    month_boundaries = []
+    current = date(start_date.year, start_date.month, 1)
+    # Move to first day of next month
+    if current < start_date:
+        if current.month == 12:
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(current.year, current.month + 1, 1)
+
+    while current <= end_date:
+        month_boundaries.append(current)
+        if current.month == 12:
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(current.year, current.month + 1, 1)
+
+    # Add vertical lines at month boundaries
+    for boundary in month_boundaries:
+        fig.add_vline(
+            x=boundary,
+            line_width=1,
+            line_dash="dash",
+            line_color="#d1d5db",
+            opacity=0.6,
+        )
+
+    fig.update_layout(
+        title=dict(
+            text="Weekly Project Allocation",
+            font=dict(size=20, family="Inter, sans-serif", color="#111827"),
+        ),
+        xaxis_title="",
+        yaxis_title="Time Allocation (%)",
+        hovermode="closest",  # Show only hovered project
+        height=450,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font=dict(family="Inter, sans-serif", color="#374151"),
+        yaxis=dict(
+            range=[0, 100],
+            gridcolor="#f3f4f6",
+            showgrid=True,
+            tickfont=dict(size=12, color="#6b7280"),
+        ),
+        xaxis=dict(
+            tickformat="%b\n%Y",
+            dtick="M1",  # Monthly ticks
+            ticklabelmode="period",
+            gridcolor="#f3f4f6",
+            showgrid=True,
+            tickfont=dict(size=12, color="#6b7280"),
+        ),
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.98,
+            xanchor="left",
+            x=1.02,
+            font=dict(size=11),
+            bgcolor="rgba(255, 255, 255, 0.9)",
+            bordercolor="#e5e7eb",
+            borderwidth=1,
+        ),
+        margin=dict(l=60, r=250, t=80, b=80),
+        autosize=True,
+    )
+
+    return fig
+
+
 def create_availability_plot(
     paced_availability: list[dict], frontload_availability: list[dict]
 ) -> go.Figure:
@@ -494,7 +754,7 @@ def create_availability_plot(
     # Create pandas series for smoothing
     paced_series = pd.Series(paced_percents)
     paced_smoothed = (
-        paced_series.rolling(window=3, center=True, min_periods=1).mean().tolist()
+        paced_series.rolling(window=4, center=True, min_periods=1).mean().tolist()
     )
 
     fig.add_trace(
@@ -517,7 +777,7 @@ def create_availability_plot(
     # Create pandas series for smoothing
     frontload_series = pd.Series(frontload_percents)
     frontload_smoothed = (
-        frontload_series.rolling(window=3, center=True, min_periods=1).mean().tolist()
+        frontload_series.rolling(window=4, center=True, min_periods=1).mean().tolist()
     )
 
     fig.add_trace(

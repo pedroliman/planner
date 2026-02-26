@@ -81,21 +81,28 @@ import pandas as pd
 from planner.scheduler import Scheduler
 from planner.analysis import (
     load_projects,
+    filter_projects_by_probability,
     compute_weekly_availability,
     compute_monthly_unassigned_days,
     create_calendar_heatmap,
     create_availability_plot,
+    create_project_allocation_plot,
 )
 
 # Configuration
 CONFIG_FILE = "projects.json"
-NUM_WEEKS = 52
+NUM_WEEKS = 104
+LAST_UPDATED = date(2026, 2, 23)  # Date when projects.json was last updated
+MIN_PROBABILITY = 0.5  # Minimum probability threshold for scenario analysis
 
 # Set date to when data was updated
-start_date = date(2026, 2, 9)
+start_date = LAST_UPDATED
 
-# Load and schedule
-projects = load_projects(CONFIG_FILE)
+# Load all projects and filter to active only (probability = 1.0)
+all_projects = load_projects(CONFIG_FILE)
+projects = filter_projects_by_probability(all_projects, 1.0)
+
+# Create schedules with active projects only
 scheduler_paced = Scheduler(projects, start_date=start_date)
 schedule_paced = scheduler_paced.create_schedule(num_weeks=NUM_WEEKS, method="paced")
 
@@ -234,7 +241,11 @@ display(
 ```
 
 
-# Paced Schedule
+# Active Projects Only
+
+This section shows schedules for active projects only (probability = 1.0), excluding pending proposals.
+
+## Paced Method
 
 The paced schedule looks pretty realistic to me, and makes sense. I iterated a bit to get it to work the way I wanted.
 
@@ -269,7 +280,7 @@ This is quite realistic and useful.
 
 This schedule pushes one of the projects I was working on to April. Interestingly, before running this, I was hoping I was going to be able to work on that sooner, but apparently not. Either way, that's useful information.
 
-### Frontloaded Schedule
+## Frontload Method
 
 The Frontloaded schedule looks as you'd expect.
 
@@ -310,7 +321,91 @@ fig = create_availability_plot(paced_availability, frontload_availability)
 fig.show()
 ```
 
-## Final thoughts.
+```{python}
+#| label: fig-project-allocation
+#| fig-cap: "Weekly project allocation: percentage of time spent on each project (smoothed over 4 weeks)"
+#| column: page
+
+fig_allocation = create_project_allocation_plot(schedule_paced, NUM_WEEKS)
+if fig_allocation:
+    fig_allocation.show()
+```
+
+# Scenario: Including Pending Projects
+
+This section shows the schedule when including projects with probability above a confidence threshold (set via MIN_PROBABILITY). This helps visualize workload when pending proposals are likely to be funded.
+
+```{python}
+#| echo: false
+#| message: false
+#| warning: false
+
+# Filter projects by probability threshold
+high_confidence_projects = filter_projects_by_probability(all_projects, MIN_PROBABILITY)
+
+print(f"Total projects (including pending): {len(all_projects)}")
+print(f"Active projects (probability = 1.0): {len(projects)}")
+print(f"High-confidence projects (probability >= {MIN_PROBABILITY}): {len(high_confidence_projects)}")
+print(f"Additional projects in this scenario: {len(high_confidence_projects) - len(projects)}")
+
+if len(high_confidence_projects) > len(projects):
+    print("\nAdditional projects included:")
+    for p in all_projects:
+        if p.probability >= MIN_PROBABILITY and p.probability < 1.0:
+            print(f"  - {p.name} (probability: {p.probability})")
+```
+
+```{python}
+#| echo: false
+#| message: false
+#| warning: false
+
+# Create schedules with filtered projects
+scheduler_filtered = Scheduler(high_confidence_projects, start_date=LAST_UPDATED)
+schedule_filtered = scheduler_filtered.create_schedule(num_weeks=NUM_WEEKS, method="paced")
+
+# Compute availability
+filtered_availability = compute_weekly_availability(schedule_filtered, NUM_WEEKS)
+```
+
+## Paced Method (With Pending Projects)
+
+```{python}
+#| label: fig-filtered-calendar
+#| fig-cap: "Paced scheduling including pending projects with probability >= threshold"
+#| column: page
+
+fig_filtered_cal = create_calendar_heatmap(schedule_filtered, f"Including Pending Projects (probability >= {MIN_PROBABILITY})")
+if fig_filtered_cal:
+    fig_filtered_cal.show()
+```
+
+```{python}
+#| echo: false
+#| label: tbl-filtered-unassigned
+#| tbl-cap: "Unassigned days per month (Including Pending Projects)"
+
+unassigned_filtered = compute_monthly_unassigned_days(schedule_filtered, include_zero_months=True)
+unassigned_filtered["cumulative_unassigned_days"] = unassigned_filtered["unassigned_days"].cumsum()
+if not unassigned_filtered.empty:
+    display(unassigned_filtered[['month_name', 'unassigned_days', 'cumulative_unassigned_days']].rename(
+        columns={'month_name': 'Month', 'unassigned_days': 'Unassigned Days', 'cumulative_unassigned_days': 'Cumulative Unassigned Days'}
+    ))
+```
+
+## Project Allocation (With Pending Projects)
+
+```{python}
+#| label: fig-filtered-allocation
+#| fig-cap: "Weekly project allocation including pending projects (smoothed over 4 weeks)"
+#| column: page
+
+fig_filtered_allocation = create_project_allocation_plot(schedule_filtered, NUM_WEEKS)
+if fig_filtered_allocation:
+    fig_filtered_allocation.show()
+```
+
+# Final thoughts.
 
 Okay, so after doing this, I'm feeling pretty good about this year. I have quite a bit ahead of me until July, so I should start planning for that. Looking at the questions I wanted to answer, I think I got answers:
 

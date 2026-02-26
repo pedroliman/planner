@@ -31,6 +31,7 @@ class Project:
         parent_name: Name of the parent project if this is a renewal
         color: ANSI color code for visualization (auto-assigned if not provided)
         priority: Priority level (higher number = higher priority, default 0)
+        probability: Probability of project happening (0-1, default 1.0 for active projects)
     """
 
     name: str
@@ -43,6 +44,7 @@ class Project:
     parent_name: Optional[str] = None
     color: Optional[str] = None
     priority: int = 0
+    probability: float = 1.0
     _color_index: int = field(default=0, repr=False)
 
     def __post_init__(self):
