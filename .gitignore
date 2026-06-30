@@ -46,3 +46,5 @@ projects.json
 *.js
 *.woff
 *quarto_ipynb
+*.xlsx
+*.pdf

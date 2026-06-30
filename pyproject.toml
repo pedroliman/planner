@@ -9,6 +9,9 @@ dependencies = [
     "pandas>=2.0.0",
     "pdfplumber>=0.11.9",
     "plotly>=5.0.0",
+    "shiny>=1.6.1",
+    "shinywidgets>=0.8.1",
+    "streamlit>=1.57.0",
 ]
 
 [project.optional-dependencies]

@@ -9,6 +9,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
+from planner.holidays import is_workday
 from planner.models import Project, Schedule
 
 
@@ -224,8 +225,8 @@ def compute_weekly_availability(schedule: Schedule, num_weeks: int) -> list[dict
         for day_offset in range(7):
             current_date = current_week_start + timedelta(days=day_offset)
 
-            # Skip weekends (Saturday=5, Sunday=6)
-            if current_date.weekday() >= 5:
+            # Skip weekends and holidays
+            if not is_workday(current_date):
                 continue
 
             # Count slots for this day
@@ -236,7 +237,7 @@ def compute_weekly_availability(schedule: Schedule, num_weeks: int) -> list[dict
                 total_slots += 1
                 unscheduled_slots += 1
             else:
-                # We always have 1 slot per weekday
+                # We always have 1 slot per workday
                 total_slots += 1
 
                 # Check if the slot is scheduled
@@ -266,12 +267,19 @@ def compute_weekly_availability(schedule: Schedule, num_weeks: int) -> list[dict
     return weekly_stats
 
 
-def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figure]:
+def create_calendar_heatmap(
+    schedule: Schedule,
+    title: str,
+    color_map: Optional[dict[str, str]] = None,
+) -> Optional[go.Figure]:
     """Create a calendar heatmap showing categorical project data.
 
     Args:
         schedule: Schedule object to visualize
         title: Title for the plot
+        color_map: Optional stable mapping from project name -> hex color. If
+            provided, plotted projects use these colors; any project missing
+            from the map falls back to the default HSL assignment.
 
     Returns:
         Plotly Figure object or None if no data
@@ -298,11 +306,11 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
     # This ensures nearby end_dates get visually different colors
     num_projects = len(project_names)
     colors = []
-    for i in range(num_projects):
-        # Use HSL color space, spread hue across 0-360 degrees
+    for i, name in enumerate(project_names):
+        if color_map and name in color_map:
+            colors.append(color_map[name])
+            continue
         hue = (i * 360 / max(num_projects, 1)) % 360
-        # Use 65% saturation and 45% lightness for vibrant but readable colors
-        # Convert HSL to hex (using standard HSL to RGB conversion)
         rgb = _hsl_to_rgb(hue, 65, 45)
         hex_color = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
         colors.append(hex_color)
@@ -322,8 +330,8 @@ def create_calendar_heatmap(schedule: Schedule, title: str) -> Optional[go.Figur
     df_data = []
     for d in all_dates:
         date_obj = d.date()
-        # Skip weekends
-        if date_obj.weekday() >= 5:
+        # Skip weekends and holidays
+        if not is_workday(date_obj):
             continue
 
         project_name = date_to_project.get(date_obj, None)
@@ -520,8 +528,8 @@ def compute_weekly_project_allocation(schedule: Schedule, num_weeks: int) -> pd.
         for day_offset in range(7):
             current_date = current_week_start + timedelta(days=day_offset)
 
-            # Skip weekends
-            if current_date.weekday() >= 5:
+            # Skip weekends and holidays
+            if not is_workday(current_date):
                 continue
 
             # Update last weekday
@@ -585,7 +593,7 @@ def compute_weekly_project_allocation(schedule: Schedule, num_weeks: int) -> pd.
             week_end = current_week_start
             for day_offset in range(7):
                 d = current_week_start + timedelta(days=day_offset)
-                if d.weekday() < 5:  # Weekday
+                if is_workday(d):
                     week_end = d
 
             smoothed_data.append({
@@ -599,12 +607,17 @@ def compute_weekly_project_allocation(schedule: Schedule, num_weeks: int) -> pd.
     return pd.DataFrame(smoothed_data)
 
 
-def create_project_allocation_plot(schedule: Schedule, num_weeks: int) -> Optional[go.Figure]:
+def create_project_allocation_plot(
+    schedule: Schedule,
+    num_weeks: int,
+    color_map: Optional[dict[str, str]] = None,
+) -> Optional[go.Figure]:
     """Create stacked area plot showing weekly project allocation percentages.
 
     Args:
         schedule: Schedule object to visualize
         num_weeks: Number of weeks to analyze
+        color_map: Optional stable mapping from project name -> hex color.
 
     Returns:
         Plotly Figure object or None if no data
@@ -627,7 +640,10 @@ def create_project_allocation_plot(schedule: Schedule, num_weeks: int) -> Option
     # Generate colors using the same HSL approach as calendar heatmap
     num_projects = len(projects)
     colors = []
-    for i in range(num_projects):
+    for i, name in enumerate(projects):
+        if color_map and name in color_map:
+            colors.append(color_map[name])
+            continue
         hue = (i * 360 / max(num_projects, 1)) % 360
         rgb = _hsl_to_rgb(hue, 65, 45)
         hex_color = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"

@@ -92,7 +92,7 @@ from planner.analysis import (
 # Configuration
 CONFIG_FILE = "projects.json"
 NUM_WEEKS = 104
-LAST_UPDATED = date(2026, 2, 23)  # Date when projects.json was last updated
+LAST_UPDATED = date(2026, 5, 4)  # Date when projects.json was last updated
 MIN_PROBABILITY = 0.5  # Minimum probability threshold for scenario analysis
 
 # Set date to when data was updated

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
 
+from planner.holidays import is_workday
 from planner.models import DEFAULT_COLORS, Project, Schedule, ScheduledSlot
 
 
@@ -126,19 +127,17 @@ class Scheduler:
 
     @staticmethod
     def _count_weekdays_inclusive(start: date, end: date) -> int:
-        """Count weekdays between start and end dates (inclusive)."""
+        """Count workdays (weekdays excluding holidays) between start and end (inclusive)."""
         if end < start:
             return 0
 
-        total_days = (end - start).days + 1
-        full_weeks, remainder = divmod(total_days, 7)
-
-        weekdays = full_weeks * 5
-        start_weekday = start.weekday()
-        for i in range(remainder):
-            if (start_weekday + i) % 7 < 5:
-                weekdays += 1
-        return weekdays
+        workdays = 0
+        d = start
+        while d <= end:
+            if is_workday(d):
+                workdays += 1
+            d += timedelta(days=1)
+        return workdays
 
     def _get_most_urgent_project(
         self,
@@ -308,8 +307,8 @@ class Scheduler:
         for day_offset in range(num_days):
             current_date = self.start_date + timedelta(days=day_offset)
 
-            # Skip weekends
-            if current_date.weekday() >= 5:
+            # Skip weekends and holidays
+            if not is_workday(current_date):
                 continue
 
             # Accrue pacing credits for active projects.
@@ -503,8 +502,8 @@ class Scheduler:
         for day_offset in range(num_days):
             current_date = self.start_date + timedelta(days=day_offset)
 
-            # Skip weekends
-            if current_date.weekday() >= 5:
+            # Skip weekends and holidays
+            if not is_workday(current_date):
                 continue
 
             # Create one slot per day
