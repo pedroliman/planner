@@ -7,28 +7,32 @@ Tools for parsing NIH Current and Pending (Other) Support PDFs and integrating w
 This package contains two main tools:
 
 1. **parse_cpos.py** - Parse CPOS PDFs and generate Excel reports
-2. **extract_cpos_projects.py** - Extract pending projects and update projects.json
+2. **extract_cpos_projects.py** - Extract pending projects and update a worker's projects file
 
 ## Usage
 
 ### Extract Pending Projects (Primary Tool)
 
-This is the main tool for updating your `projects.json` from CPOS forms:
+This is the main tool for updating a worker's `workers/<worker>.json` from CPOS forms:
 
 ```bash
 # Activate virtual environment
 source .venv/bin/activate
 
-# Run the extraction tool
+# Run the extraction tool (default worker: pedro)
 python -m osparse.extract_cpos_projects
+
+# Or target another worker
+python -m osparse.extract_cpos_projects --worker alice
 ```
 
 **What it does:**
-1. Finds the most recent `cpos*.pdf` file in the root directory
+1. Finds the most recent `cpos*.pdf` file in the root directory, preferring one
+   whose name mentions the worker (e.g. `cpos-alice.pdf`)
 2. Parses all projects from the PDF
 3. Extracts pending projects (status = "Pending")
 4. Calculates `remaining_days = 226 * (first year person months) / 12`
-5. Updates `projects.json`:
+5. Updates `workers/<worker>.json`:
    - Keeps all active projects (no `probability` field)
    - Updates existing pending projects (preserves their `probability` value)
    - Adds new pending projects with `probability: 0.5`
@@ -90,7 +94,7 @@ Pending projects:
     Dates: 2026-01-01 to 2026-12-31
     Remaining days: 27.7
 
-Updating projects.json ...
+Updating /Users/plima/dev/pocs/planner/workers/pedro.json ...
 
 Projects.json update summary:
   Active projects (kept):     9
@@ -116,5 +120,5 @@ Install with: `uv add pdfplumber openpyxl`
 
 - `__init__.py` - Package initialization
 - `parse_cpos.py` - Core CPOS parsing logic
-- `extract_cpos_projects.py` - Main extraction tool for projects.json
+- `extract_cpos_projects.py` - Main extraction tool for `workers/<worker>.json`
 - `README.md` - This file

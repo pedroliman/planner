@@ -16,6 +16,25 @@ DEFAULT_COLORS = [
 
 RESET_COLOR = "\033[0m"
 
+# Projects follow an annual budget cycle: used for projects loaded without an
+# explicit end date, and for the span of generated renewal projects.
+DEFAULT_DURATION_DAYS = 365
+
+# Grants are budgeted in dollars, not days, so a rising salary buys fewer days
+# each year. Renewal years shrink by this rate unless overridden.
+DEFAULT_ANNUAL_SALARY_GROWTH = 0.04
+
+
+def renewal_name(parent_name: str, index: int) -> str:
+    """Name of the ``index``-th renewal year of a project (1-based).
+
+    The first renewal keeps the historical ``(Renewal)`` suffix so existing
+    configs, colors, and reports do not change; later years are numbered.
+    """
+    if index <= 1:
+        return f"{parent_name} (Renewal)"
+    return f"{parent_name} (Renewal {index})"
+
 
 @dataclass
 class Project:
@@ -26,7 +45,10 @@ class Project:
         end_date: The deadline for the project
         remaining_days: Number of full days of work remaining
         start_date: When the project starts (defaults to today if not specified)
-        renewal_days: If set, creates a renewal project with this many days after completion
+        renewal_days: If set, the days budgeted for the first renewal year
+            (later years are discounted for salary growth)
+        years_left: Years of funding left including the current one. 1 (default)
+            means no renewal; 5 means four renewal years
         is_renewal: Internal flag to track if this is a renewal project
         parent_name: Name of the parent project if this is a renewal
         color: ANSI color code for visualization (auto-assigned if not provided)
@@ -40,6 +62,7 @@ class Project:
     start_date: Optional[date] = None
     renewal_days: Optional[float] = None
     renewal_lag_days: Optional[int] = None
+    years_left: int = 1
     is_renewal: bool = False
     parent_name: Optional[str] = None
     color: Optional[str] = None
@@ -50,6 +73,21 @@ class Project:
     def __post_init__(self):
         if self.color is None:
             self.color = DEFAULT_COLORS[self._color_index % len(DEFAULT_COLORS)]
+
+    @property
+    def renewal_years(self) -> int:
+        """How many renewal years this project generates.
+
+        ``years_left`` counts the current year, so it is one more than the number
+        of renewals. A renewal never renews again (no recursion). Configs written
+        before ``years_left`` existed asked for a single renewal year by setting
+        ``renewal_days`` alone, so that still means one.
+        """
+        if self.is_renewal:
+            return 0
+        if self.years_left > 1:
+            return self.years_left - 1
+        return 1 if self.renewal_days else 0
 
     @property
     def slots_remaining(self) -> int:
@@ -78,6 +116,25 @@ class ScheduledSlot:
 
 
 @dataclass
+class ReassignedDays:
+    """Whole days of a project's budget handed off to someone else.
+
+    Booked at a reassignment checkpoint when the paced schedule could not give a
+    project the days it was owed. The days leave this worker's budget; who picks
+    them up is not modelled yet.
+
+    Attributes:
+        project: The project the days belong to
+        date: Checkpoint date the reassignment was booked on
+        days: Number of whole days reassigned out
+    """
+
+    project: "Project"
+    date: date
+    days: int
+
+
+@dataclass
 class Schedule:
     """A complete schedule of project work.
 
@@ -85,11 +142,14 @@ class Schedule:
         slots: List of scheduled slots
         start_date: First date in the schedule
         end_date: Last date in the schedule
+        reassignments: Days reassigned out, in checkpoint order (empty unless
+            reassignment is enabled)
     """
 
     slots: list[ScheduledSlot] = field(default_factory=list)
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+    reassignments: list[ReassignedDays] = field(default_factory=list)
 
     def get_slots_for_date(self, target_date: date) -> list[ScheduledSlot]:
         """Get all slots for a specific date."""
@@ -109,3 +169,12 @@ class Schedule:
         if not assigned_slots:
             return None
         return max(s.date for s in assigned_slots)
+
+    def reassigned_days_for(self, project: Project) -> int:
+        """Total days reassigned out of a project across the whole schedule."""
+        return sum(r.days for r in self.reassignments if r.project == project)
+
+    @property
+    def total_reassigned_days(self) -> int:
+        """Total days reassigned out across all projects."""
+        return sum(r.days for r in self.reassignments)

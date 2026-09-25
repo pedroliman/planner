@@ -17,31 +17,37 @@ from planner.analysis import (
     create_availability_plot,
     create_calendar_heatmap,
     create_project_allocation_plot,
+    create_reassignment_table,
     load_projects,
 )
-from planner.scheduler import Scheduler
+from planner.models import DEFAULT_ANNUAL_SALARY_GROWTH, renewal_name
+from planner.scheduler import DEFAULT_REASSIGNMENT_CADENCE_DAYS, Scheduler
+from planner.workers import (
+    DEFAULT_WORKER,
+    list_workers,
+    worker_config_path,
+    worker_label,
+)
 
-CONFIG_FILE = "projects.json"
-DEFAULT_START = date(2026, 6, 29)
+DEFAULT_START = date(2026, 9, 22)
 DEFAULT_NUM_WEEKS = 52
 
-ALL_PROJECTS = load_projects(CONFIG_FILE)
-ACTIVE = [p for p in ALL_PROJECTS if p.probability >= 1.0]
-PENDING = [p for p in ALL_PROJECTS if p.probability < 1.0]
+WORKERS = list_workers()
 
 
 def _stable_color_map(projects) -> dict[str, str]:
-    """Stable name -> hex color, including renewals.
+    """Stable name -> hex color, including every renewal year.
 
-    Assigns colors by the project's position in projects.json so toggling a
-    project on/off does not reshuffle the palette.
+    Assigns colors by the project's position in the worker's projects file so
+    toggling a project on/off does not reshuffle the palette.
     """
     color_map: dict[str, str] = {}
     n = max(len(projects), 1)
     for i, p in enumerate(projects):
         r, g, b = _hsl_to_rgb((i * 360 / n) % 360, 65, 45)
         color_map[p.name] = f"#{r:02x}{g:02x}{b:02x}"
-        color_map[f"{p.name} (Renewal)"] = color_map[p.name]
+        for year in range(1, p.renewal_years + 1):
+            color_map[renewal_name(p.name, year)] = color_map[p.name]
     return color_map
 
 
@@ -53,6 +59,32 @@ def _pending_label(p) -> HTML:
         f"<span style='color:var(--planner-muted);font-size:0.82em;'>"
         f"p={p.probability:g}</span></span>"
     )
+
+
+def _worker_state(worker: str) -> dict:
+    """Load a worker's projects into the shape the server reactives expect.
+
+    Never raises: a missing or malformed projects file yields an empty state
+    plus an ``error`` message the caller can surface.
+    """
+    path = worker_config_path(worker)
+    try:
+        all_projects = load_projects(str(path))
+        error = None
+    except Exception as exc:  # noqa: BLE001 - surfaced in the UI
+        all_projects, error = [], f"{type(exc).__name__}: {exc}"
+    return {
+        "worker": worker,
+        "path": path,
+        "all": all_projects,
+        "active": [p for p in all_projects if p.probability >= 1.0],
+        "pending": [p for p in all_projects if p.probability < 1.0],
+        "color_map": _stable_color_map(all_projects),
+        "error": error,
+    }
+
+
+INITIAL_STATE = _worker_state(DEFAULT_WORKER)
 
 
 CUSTOM_CSS = """
@@ -187,22 +219,54 @@ app_ui = ui.page_fluid(
     ui.div(
         ui.h1("Project Planner", class_="app-title"),
         ui.div(
-            "Toggle projects to recompute paced and frontload schedules in real time.",
+            "Pick a worker, then toggle projects to recompute paced and "
+            "frontload schedules in real time.",
             class_="app-subtitle",
         ),
         class_="app-header",
     ),
     ui.layout_sidebar(
         ui.sidebar(
+            ui.h4("Worker"),
+            ui.input_select(
+                "worker",
+                label=None,
+                choices={w: worker_label(w) for w in WORKERS},
+                selected=DEFAULT_WORKER,
+            ),
+            ui.hr(),
             ui.h4("Horizon"),
             ui.input_date("start_date", "Start date", value=DEFAULT_START),
             ui.input_slider(
                 "num_weeks",
                 "Horizon (weeks)",
                 min=12,
-                max=208,
+                max=520,
                 value=DEFAULT_NUM_WEEKS,
                 step=4,
+            ),
+            ui.input_numeric(
+                "salary_growth",
+                "Annual salary growth (%)",
+                value=DEFAULT_ANNUAL_SALARY_GROWTH * 100,
+                min=0,
+                max=50,
+                step=0.5,
+            ),
+            ui.hr(),
+            ui.h4("Reassignment"),
+            ui.input_checkbox(
+                "reassign_enabled",
+                "Reassign days I cannot cover",
+                value=False,
+            ),
+            ui.input_numeric(
+                "reassign_cadence",
+                "Reassignment cadence (days)",
+                value=DEFAULT_REASSIGNMENT_CADENCE_DAYS,
+                min=1,
+                max=365,
+                step=1,
             ),
             ui.hr(),
             ui.input_action_button(
@@ -224,8 +288,8 @@ app_ui = ui.page_fluid(
             ui.input_checkbox_group(
                 "active_selected",
                 label=None,
-                choices={p.name: p.name for p in ACTIVE},
-                selected=[p.name for p in ACTIVE],
+                choices={p.name: p.name for p in INITIAL_STATE["active"]},
+                selected=[p.name for p in INITIAL_STATE["active"]],
             ),
             ui.hr(),
             ui.h4("Pending projects"),
@@ -241,7 +305,7 @@ app_ui = ui.page_fluid(
             ui.input_checkbox_group(
                 "pending_selected",
                 label=None,
-                choices={p.name: _pending_label(p) for p in PENDING},
+                choices={p.name: _pending_label(p) for p in INITIAL_STATE["pending"]},
                 selected=[],
             ),
             width=320,
@@ -268,6 +332,11 @@ app_ui = ui.page_fluid(
             ),
             ui.nav_panel("Allocation", output_widget("allocation_plot")),
             ui.nav_panel(
+                "Reassignment",
+                ui.output_ui("reassignment_note"),
+                ui.output_data_frame("reassignment_table"),
+            ),
+            ui.nav_panel(
                 "Budget",
                 ui.h4("Paced"),
                 ui.output_ui("paced_budget"),
@@ -281,50 +350,91 @@ app_ui = ui.page_fluid(
 
 
 def server(input, output, session):
-    projects_state = reactive.value(
-        {
-            "all": ALL_PROJECTS,
-            "active": ACTIVE,
-            "pending": PENDING,
-            "color_map": _stable_color_map(ALL_PROJECTS),
-        }
-    )
+    projects_state = reactive.value(INITIAL_STATE)
 
-    @reactive.effect
-    @reactive.event(input.refresh_projects)
-    def _refresh():
-        prev_active_names = {p.name for p in projects_state.get()["active"]}
-        all_projects = load_projects(CONFIG_FILE)
-        active = [p for p in all_projects if p.probability >= 1.0]
-        pending = [p for p in all_projects if p.probability < 1.0]
-        projects_state.set(
-            {
-                "all": all_projects,
-                "active": active,
-                "pending": pending,
-                "color_map": _stable_color_map(all_projects),
-            }
-        )
-        active_names = {p.name for p in active}
-        pending_names = {p.name for p in pending}
-        kept_active = [n for n in input.active_selected() if n in active_names]
-        added_active = [p.name for p in active if p.name not in prev_active_names]
-        kept_pending = [n for n in input.pending_selected() if n in pending_names]
+    def _apply_state(state: dict, keep_selection: bool):
+        """Publish a freshly loaded worker state and resync the checkbox groups.
+
+        When ``keep_selection`` is False (worker switch) all active projects are
+        selected and no pending ones, matching the app's initial defaults.
+        """
+        prev = projects_state.get()
+        projects_state.set(state)
+
+        active, pending = state["active"], state["pending"]
+        if keep_selection:
+            active_names = {p.name for p in active}
+            pending_names = {p.name for p in pending}
+            prev_active_names = {p.name for p in prev["active"]}
+            kept_active = [n for n in input.active_selected() if n in active_names]
+            added_active = [p.name for p in active if p.name not in prev_active_names]
+            selected_active = kept_active + added_active
+            selected_pending = [
+                n for n in input.pending_selected() if n in pending_names
+            ]
+        else:
+            selected_active = [p.name for p in active]
+            selected_pending = []
+
         ui.update_checkbox_group(
             "active_selected",
             choices={p.name: p.name for p in active},
-            selected=kept_active + added_active,
+            selected=selected_active,
         )
         ui.update_checkbox_group(
             "pending_selected",
             choices={p.name: _pending_label(p) for p in pending},
-            selected=kept_pending,
+            selected=selected_pending,
         )
-        ui.notification_show(
-            f"Reloaded {len(all_projects)} projects from {CONFIG_FILE}",
-            type="message",
-            duration=3,
+
+        name = state["path"].name
+        if state["error"]:
+            ui.notification_show(
+                f"Could not load {name}: {state['error']}",
+                type="error",
+                duration=8,
+            )
+        else:
+            ui.notification_show(
+                f"Loaded {len(state['all'])} projects from {name}",
+                type="message",
+                duration=3,
+            )
+
+    @reactive.effect
+    def _report_initial_error():
+        with reactive.isolate():
+            state = projects_state.get()
+        if state["error"]:
+            ui.notification_show(
+                f"Could not load {state['path'].name}: {state['error']}",
+                type="error",
+                duration=None,
+            )
+
+    @reactive.effect
+    @reactive.event(input.worker, ignore_init=True)
+    def _switch_worker():
+        worker = input.worker()
+        with reactive.isolate():
+            loaded = projects_state.get()["worker"]
+        if worker == loaded:
+            # The client re-sent the same value (e.g. after ui.update_select)
+            return
+        _apply_state(_worker_state(worker), keep_selection=False)
+
+    @reactive.effect
+    @reactive.event(input.refresh_projects, ignore_init=True)
+    def _refresh():
+        # Rescan workers/ so files added while the app is running show up
+        workers = list_workers()
+        current = input.worker() if input.worker() in workers else DEFAULT_WORKER
+        ui.update_select(
+            "worker",
+            choices={w: worker_label(w) for w in workers},
+            selected=current,
         )
+        _apply_state(_worker_state(current), keep_selection=current == input.worker())
 
     @reactive.effect
     @reactive.event(input.active_all)
@@ -358,19 +468,48 @@ def server(input, output, session):
         return [p for p in projects_state.get()["all"] if p.name in names]
 
     @reactive.calc
+    def reassignment_cadence() -> int:
+        """Cadence in days, tolerating a cleared or out-of-range numeric input."""
+        value = input.reassign_cadence()
+        if value is None:
+            return DEFAULT_REASSIGNMENT_CADENCE_DAYS
+        return max(1, int(value))
+
+    @reactive.calc
+    def salary_growth() -> float:
+        """Salary growth as a fraction, tolerating a cleared numeric input."""
+        value = input.salary_growth()
+        if value is None:
+            return DEFAULT_ANNUAL_SALARY_GROWTH
+        return max(0.0, float(value)) / 100.0
+
+    @reactive.calc
     def schedule_paced():
         projects = selected_projects()
         if not projects:
             return None
-        sched = Scheduler(projects, start_date=input.start_date())
-        return sched, sched.create_schedule(num_weeks=input.num_weeks(), method="paced")
+        sched = Scheduler(
+            projects,
+            start_date=input.start_date(),
+            annual_salary_growth=salary_growth(),
+        )
+        return sched, sched.create_schedule(
+            num_weeks=input.num_weeks(),
+            method="paced",
+            reassign_days=input.reassign_enabled(),
+            reassignment_cadence_days=reassignment_cadence(),
+        )
 
     @reactive.calc
     def schedule_frontload():
         projects = selected_projects()
         if not projects:
             return None
-        sched = Scheduler(projects, start_date=input.start_date())
+        sched = Scheduler(
+            projects,
+            start_date=input.start_date(),
+            annual_salary_growth=salary_growth(),
+        )
         return sched, sched.create_schedule(
             num_weeks=input.num_weeks(), method="frontload"
         )
@@ -402,16 +541,22 @@ def server(input, output, session):
         projects = selected_projects()
         n_active = len(input.active_selected())
         n_pending = len(input.pending_selected())
-        total_days = sum(p.remaining_days for p in projects)
 
         # Count at-risk projects against the paced schedule
         at_risk = 0
         missed = 0
+        reassigned = 0
         result = schedule_paced()
+        # scheduler.projects includes renewals generated within the horizon;
+        # fall back to the selected projects when nothing is scheduled yet
+        total_days = sum(p.remaining_days for p in projects)
         if result is not None:
             scheduler, sched = result
+            total_days = sum(p.remaining_days for p in scheduler.projects)
+            reassigned = sched.total_reassigned_days
             for project in scheduler.projects:
-                budget = project.slots_remaining
+                # Reassigned days are someone else's problem now
+                budget = project.slots_remaining - sched.reassigned_days_for(project)
                 if budget <= 0:
                     continue
                 dates = sorted(s.date for s in sched.slots if s.project == project)
@@ -428,14 +573,17 @@ def server(input, output, session):
                 class_=f"summary-stat {cls}",
             )
 
-        return ui.div(
+        stats = [
             stat("Active", str(n_active)),
             stat("Pending", str(n_pending)),
             stat("Total days", f"{total_days:g}"),
             stat("Tight (<14d buffer)", str(at_risk), "warn" if at_risk else ""),
             stat("Missed deadline", str(missed), "danger" if missed else ""),
-            class_="summary-card",
-        )
+        ]
+        if input.reassign_enabled():
+            stats.append(stat("Reassigned days", str(reassigned)))
+
+        return ui.div(*stats, class_="summary-card")
 
     # ----- Overview tab -----
     @render_widget
@@ -515,22 +663,61 @@ def server(input, output, session):
             return pd.DataFrame()
         return _unassigned_df(result[1])
 
+    # ----- Reassignment tab -----
+    @render.ui
+    def reassignment_note():
+        if not input.reassign_enabled():
+            return HTML(
+                "<p style='color:var(--planner-muted);'>Day reassignment is off. "
+                "Turn on <em>Reassign days I cannot cover</em> in the sidebar to see "
+                "which project days would move to someone else.</p>"
+            )
+        result = schedule_paced()
+        if result is None:
+            return HTML("<p style='color:var(--planner-muted);'>No projects selected.</p>")
+        sched = result[1]
+        cadence = reassignment_cadence()
+        if sched.total_reassigned_days == 0:
+            return HTML(
+                f"<p style='color:var(--planner-muted);'>Nothing to reassign: every "
+                f"project keeps pace on the paced schedule (checked every "
+                f"{cadence} days).</p>"
+            )
+        return HTML(
+            f"<p style='color:var(--planner-muted);'>"
+            f"<strong>{sched.total_reassigned_days}</strong> day(s) reassigned out of "
+            f"the paced schedule, checked every {cadence} days. "
+            f"Days are booked to the month of the checkpoint that found them.</p>"
+        )
+
+    @render.data_frame
+    def reassignment_table():
+        if not input.reassign_enabled():
+            return pd.DataFrame()
+        result = schedule_paced()
+        if result is None:
+            return pd.DataFrame()
+        return create_reassignment_table(result[1])
+
     # ----- Budget table with risk coloring -----
     def _budget_rows(sched, projects):
         rows = []
         for project in projects:
-            budget = project.slots_remaining
-            if budget <= 0:
+            reassigned = sched.reassigned_days_for(project)
+            # Budget net of days handed off: what this worker still owes
+            budget = project.slots_remaining - reassigned
+            if budget <= 0 and reassigned <= 0:
                 continue
             dates = sorted(s.date for s in sched.slots if s.project == project)
             scheduled = len(dates)
-            exhausted = dates[budget - 1] if scheduled >= budget else None
+            exhausted = dates[budget - 1] if budget > 0 and scheduled >= budget else None
             days_before = (project.end_date - exhausted).days if exhausted else None
             rows.append(
                 {
                     "project": project.name,
                     "end_date": project.end_date,
                     "budget": budget,
+                    "reassigned": reassigned,
                     "scheduled": scheduled,
                     "exhausted": exhausted,
                     "days_before": days_before,
@@ -542,11 +729,16 @@ def server(input, output, session):
     def _budget_html(rows) -> HTML:
         if not rows:
             return HTML("<p style='color:var(--planner-muted);'>No projects.</p>")
+        show_reassigned = any(r["reassigned"] for r in rows)
         out = [
             "<table class='table table-sm budget-table'>",
             "<thead><tr>",
             "<th>Project</th><th>End Date</th>",
             "<th style='text-align:right;'>Budget</th>",
+        ]
+        if show_reassigned:
+            out.append("<th style='text-align:right;'>Reassigned</th>")
+        out += [
             "<th style='text-align:right;'>Scheduled</th>",
             "<th>Exhausted On</th>",
             "<th style='text-align:right;'>Days Before Deadline</th>",
@@ -556,7 +748,9 @@ def server(input, output, session):
             risk_cls = ""
             days_cell_cls = "col-days-before"
             days_val = "—"
-            if r["days_before"] is None:
+            if r["budget"] <= 0:
+                days_val = "fully reassigned"
+            elif r["days_before"] is None:
                 risk_cls = "risk-missed"
                 days_cell_cls += " missed"
                 days_val = f"not exhausted ({r['scheduled']}/{r['budget']})"
@@ -575,6 +769,10 @@ def server(input, output, session):
             out.append(f"<td>{r['project']}</td>")
             out.append(f"<td>{r['end_date']}</td>")
             out.append(f"<td style='text-align:right;'>{r['budget']}</td>")
+            if show_reassigned:
+                out.append(
+                    f"<td style='text-align:right;'>{r['reassigned'] or '—'}</td>"
+                )
             out.append(f"<td style='text-align:right;'>{r['scheduled']}</td>")
             out.append(f"<td>{r['exhausted'] if r['exhausted'] else '—'}</td>")
             out.append(

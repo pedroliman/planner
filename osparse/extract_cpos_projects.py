@@ -2,13 +2,15 @@
 """
 extract_cpos_projects.py
 ────────────────────────
-Extract pending projects from the most recent CPOS PDF and update projects.json.
+Extract pending projects from the most recent CPOS PDF and update a worker's
+projects file (workers/<worker>.json).
 
 Logic:
-  1. Find the most recent cpos*.pdf file in the root folder
+  1. Find the most recent cpos*.pdf file in the root folder, preferring one
+     whose name mentions the worker (e.g. cpos-pedro.pdf)
   2. Parse pending projects from the PDF
   3. Calculate remaining_days = 226 * (first year person months) / 12
-  4. Update projects.json:
+  4. Update the worker's projects file:
      - Add new pending projects with probability=0.5
      - Remove pending projects that are no longer in the CPOS
      - Keep all active projects (without probability field)
@@ -16,17 +18,20 @@ Logic:
   5. Save Excel file with same name as PDF
 
 Usage:
-    python -m osparse.extract_cpos_projects
+    python -m osparse.extract_cpos_projects [--worker pedro]
     or
-    python osparse/extract_cpos_projects.py
+    python osparse/extract_cpos_projects.py [--worker pedro]
 """
 
+import argparse
 import json
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from openpyxl import Workbook
+
+from planner.workers import DEFAULT_WORKER, normalize_worker, worker_config_path
 
 from .parse_cpos import (
     extract_lines,
@@ -35,10 +40,23 @@ from .parse_cpos import (
     write_projects_sheet,
 )
 
+# Planning fields the CPOS PDF knows nothing about. A matched pending project is
+# rebuilt from its CPOS row, so these are copied over from the existing entry or
+# they would be silently dropped on every extraction.
+HAND_MAINTAINED_FIELDS = ("priority", "years_left", "renewal_days", "renewal_lag_days")
 
-def find_most_recent_cpos_pdf(root_dir: Path) -> Path | None:
-    """Find the most recent cpos*.pdf file in the root directory."""
+
+def find_most_recent_cpos_pdf(root_dir: Path, worker: str | None = None) -> Path | None:
+    """Find the most recent cpos*.pdf file in the root directory.
+
+    When a worker is given, PDFs whose name mentions the worker (e.g.
+    cpos-pedro.pdf) are preferred; otherwise any cpos*.pdf is used.
+    """
     cpos_files = list(root_dir.glob("cpos*.pdf"))
+    if worker:
+        worker_files = [f for f in cpos_files if worker.lower() in f.stem.lower()]
+        if worker_files:
+            cpos_files = worker_files
     if not cpos_files:
         return None
     # Sort by modification time, most recent first
@@ -246,16 +264,17 @@ def update_projects_json(
     # Step 1: Keep all active projects (no probability field)
     active_projects = [p for p in existing_projects if "probability" not in p]
 
-    # Step 2: Update pending projects that match CPOS titles (preserve probability but update dates/days)
+    # Step 2: Update pending projects that match CPOS titles (dates/days come from
+    # CPOS, hand-maintained planning fields survive)
     matched_pending = []
     for norm_title, existing_proj in existing_pending_by_title.items():
         if norm_title in cpos_by_title:
             cpos_proj = cpos_by_title[norm_title]
-            # Preserve existing probability and priority, but update other fields from CPOS
             updated_proj = cpos_proj.copy()
             updated_proj["probability"] = existing_proj.get("probability", default_probability)
-            if "priority" in existing_proj:
-                updated_proj["priority"] = existing_proj["priority"]
+            for key in HAND_MAINTAINED_FIELDS:
+                if key in existing_proj:
+                    updated_proj[key] = existing_proj[key]
             matched_pending.append(updated_proj)
 
     # Step 3: Add new pending projects from CPOS
@@ -284,18 +303,29 @@ def update_projects_json(
         print(f"  Pending projects (removed): {removed_count}")
 
 
-def main():
+def main(argv: list[str] | None = None):
     """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Extract pending CPOS projects into a worker's projects file."
+    )
+    parser.add_argument(
+        "--worker",
+        default=DEFAULT_WORKER,
+        help=f"Worker whose projects file to update (default: {DEFAULT_WORKER})",
+    )
+    args = parser.parse_args(argv)
+    worker = normalize_worker(args.worker)
+
     # Find root directory (parent of osparse folder)
     script_dir = Path(__file__).parent
     root_dir = script_dir.parent
 
     print("="*70)
-    print("CPOS Pending Projects Extraction")
+    print(f"CPOS Pending Projects Extraction (worker: {worker})")
     print("="*70)
 
     # Find most recent CPOS PDF
-    cpos_pdf = find_most_recent_cpos_pdf(root_dir)
+    cpos_pdf = find_most_recent_cpos_pdf(root_dir, worker)
     if not cpos_pdf:
         print("Error: No cpos*.pdf file found in root directory")
         return 1
@@ -319,9 +349,10 @@ def main():
             print(f"    Dates: {p['start_date']} to {p['end_date']}")
             print(f"    Remaining days: {p['remaining_days']}")
 
-    # Update projects.json
-    json_path = root_dir / "projects.json"
-    print(f"\nUpdating {json_path.name} ...")
+    # Update the worker's projects file
+    json_path = worker_config_path(worker, root_dir)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"\nUpdating {json_path} ...")
     update_projects_json(json_path, pending_projects)
 
     # Save Excel file

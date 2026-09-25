@@ -34,7 +34,7 @@ This planner answers those questions by scheduling your work over the next sever
 
 The planner reads from a simple JSON file listing your projects, their deadlines, and how much work remains. That's it.
 
-Each project needs an end date and an estimate of remaining days. Optionally, you can say that some projects will get "renewed". This is useful for grants that get renewed and goes for at least another year with a set budget.
+Each project needs an end date and an estimate of remaining days. Optionally, you can say how many years of funding a project has left (`years_left`, counting the current year). This is useful for grants that run for several more years: the planner creates one follow-on year per remaining year, each shrinking by an assumed annual salary raise, since a grant year is a fixed pot of money. Set `renewal_days` to pin the first follow-on year's budget instead of deriving it.
 
 The json file looks like this:
 
@@ -45,6 +45,7 @@ The json file looks like this:
       "name": "Project A",
       "end_date": "2026-03-30",
       "remaining_days": 28,
+      "years_left": 3,
       "renewal_days": 10
     },
     {
@@ -74,11 +75,13 @@ Let's run both approaches and compare them:
 #| message: false
 #| warning: true
 
+import os
 from datetime import date
 import pandas as pd
 
 # Import planner modules
 from planner.scheduler import Scheduler
+from planner.workers import DEFAULT_WORKER, worker_config_path
 from planner.analysis import (
     load_projects,
     filter_projects_by_probability,
@@ -90,9 +93,11 @@ from planner.analysis import (
 )
 
 # Configuration
-CONFIG_FILE = "projects.json"
+# Render another worker's schedule with: PLANNER_WORKER=alice quarto render schedule.qmd
+WORKER = os.environ.get("PLANNER_WORKER", DEFAULT_WORKER)
+CONFIG_FILE = str(worker_config_path(WORKER))
 NUM_WEEKS = 104
-LAST_UPDATED = date(2026, 5, 4)  # Date when projects.json was last updated
+LAST_UPDATED = date(2026, 5, 4)  # Date when the worker's projects file was last updated
 MIN_PROBABILITY = 0.5  # Minimum probability threshold for scenario analysis
 
 # Set date to when data was updated

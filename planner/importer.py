@@ -5,6 +5,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from planner.workers import worker_config_path
+
 try:
     from openpyxl import load_workbook
     EXCEL_AVAILABLE = True
@@ -175,21 +177,25 @@ def read_excel_projects(
 
 def update_projects_json(
     new_projects: list[dict],
-    projects_path: str = "projects.json"
+    projects_path: str | None = None,
+    worker: str | None = None,
 ) -> dict:
-    """Update projects.json with new or updated projects.
+    """Update a worker's projects file with new or updated projects.
 
     - If a project exists (by name), only update remaining_days
     - If a project doesn't exist, add it
 
     Args:
         new_projects: List of project dictionaries from import
-        projects_path: Path to projects.json file
+        projects_path: Explicit path to a projects file; when omitted, the
+            file of `worker` (default worker if also omitted) is used
+        worker: Worker name, used only when projects_path is not given
 
     Returns:
         Dictionary with update statistics (added, updated, unchanged)
     """
-    path = Path(projects_path)
+    path = Path(projects_path) if projects_path else worker_config_path(worker)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     # Load existing projects
     existing_data = {"projects": []}

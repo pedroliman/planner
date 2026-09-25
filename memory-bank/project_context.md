@@ -17,11 +17,16 @@ Answers key research planning questions:
 - **scheduler.py**: Scheduling algorithms (paced and frontload methods)
 - **analysis.py**: Visualization helpers (heatmaps, availability plots, allocation plots)
 - **importer.py**: Excel import support (optional)
+- **workers.py**: Resolves per-worker projects files (`workers/<worker>.json`)
 
 ### Data Flow
 ```
-projects.json → load_projects() → Scheduler → Schedule → Plotly visualizations → HTML report
+workers/<worker>.json → load_projects() → Scheduler → Schedule → Plotly visualizations → app/HTML report
 ```
+
+Worker selection: sidebar selector in `app.py`, `PLANNER_WORKER` env var in
+`schedule.qmd`, `--worker` flag in `osparse.extract_cpos_projects`. Default
+worker is `pedro`.
 
 ### Scheduling Methods
 
@@ -48,7 +53,7 @@ Both methods:
 
 ### Configuration Format
 
-**projects.json** structure:
+**workers/&lt;worker&gt;.json** structure:
 ```json
 {
   "projects": [
@@ -97,7 +102,7 @@ Both methods:
 2. **Optional dependencies**: plotly, pandas, openpyxl for visualizations
 3. **Date handling**: Uses `datetime.date`, scheduler starts from `date.today()`
 4. **Time slots**: Each day = 2 slots (AM/PM), but currently treating as 1 slot per day
-5. **Config files**: `projects.json` and `import_config.json` are gitignored
+5. **Config files**: `workers/` (legacy `projects.json` still honored for the default worker) and `import_config.json` are gitignored
 6. **Smoothing approach**: Trailing average for project allocation (prevents future leakage), centered for coverage plot
 7. **Week representation**: Plot data at week-end dates to accurately reflect when work occurs
 

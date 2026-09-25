@@ -1,12 +1,14 @@
 """Tests for the project planner."""
 
 import json
+import warnings
 from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 
+from planner.holidays import is_workday
 from planner.models import Project, Schedule, ScheduledSlot
 from planner.scheduler import Scheduler
 
@@ -649,6 +651,154 @@ class TestProjectRenewal:
         # Check renewals were created for A and B but not C
         renewal_count = sum(1 for p in scheduler.projects if p.is_renewal)
         assert renewal_count == 2  # A and B should have renewals
+
+
+class TestYearsLeft:
+    """Multi-year grants: ``years_left`` renewal years, discounted for salary."""
+
+    def test_default_years_left_means_no_renewal(self):
+        project = Project("Solo", date(2026, 12, 31), 10)
+        assert project.years_left == 1
+        assert project.renewal_years == 0
+
+        scheduler = Scheduler([project], start_date=date(2026, 1, 1))
+        scheduler.create_schedule(num_weeks=208, method="paced")
+        assert not [p for p in scheduler.projects if p.is_renewal]
+
+    def test_years_left_generates_one_renewal_per_remaining_year(self):
+        """years_left counts the current year, so 5 years is 4 renewals."""
+        project = Project("CISNET", date(2026, 12, 31), 40, years_left=5)
+
+        scheduler = Scheduler([project], start_date=date(2026, 1, 1))
+        scheduler.create_schedule(num_weeks=520, method="paced")
+
+        renewals = [p for p in scheduler.projects if p.is_renewal]
+        assert [p.name for p in renewals] == [
+            "CISNET (Renewal)",
+            "CISNET (Renewal 2)",
+            "CISNET (Renewal 3)",
+            "CISNET (Renewal 4)",
+        ]
+        assert all(p.parent_name == "CISNET" for p in renewals)
+
+    def test_renewal_years_chain_back_to_back(self):
+        project = Project("Chain", date(2026, 6, 30), 20, years_left=3)
+
+        scheduler = Scheduler([project], start_date=date(2026, 1, 1))
+        scheduler.create_schedule(num_weeks=520, method="paced")
+
+        renewals = sorted(
+            (p for p in scheduler.projects if p.is_renewal), key=lambda p: p.start_date
+        )
+        assert renewals[0].start_date == date(2026, 7, 1)
+        assert renewals[0].end_date == date(2026, 6, 30) + timedelta(days=365)
+        assert renewals[1].start_date == renewals[0].end_date + timedelta(days=1)
+        assert renewals[1].end_date == renewals[0].end_date + timedelta(days=365)
+
+    def test_salary_growth_discounts_each_renewal_year(self):
+        """No renewal_days: the current year is the baseline, discounted yearly."""
+        project = Project("Grant", date(2026, 12, 31), 100, years_left=3)
+        scheduler = Scheduler(
+            [project], start_date=date(2026, 1, 1), annual_salary_growth=0.04
+        )
+        scheduler.create_schedule(num_weeks=520, method="paced")
+
+        renewals = sorted(
+            (p for p in scheduler.projects if p.is_renewal), key=lambda p: p.start_date
+        )
+        assert renewals[0].remaining_days == pytest.approx(100 / 1.04)
+        assert renewals[1].remaining_days == pytest.approx(100 / 1.04**2)
+
+    def test_renewal_days_sets_the_first_year_then_discounts(self):
+        """An explicit renewal_days is taken as-is; later years shrink from it."""
+        project = Project(
+            "Grant", date(2026, 12, 31), 100, renewal_days=38, years_left=3
+        )
+        scheduler = Scheduler(
+            [project], start_date=date(2026, 1, 1), annual_salary_growth=0.04
+        )
+        scheduler.create_schedule(num_weeks=520, method="paced")
+
+        renewals = sorted(
+            (p for p in scheduler.projects if p.is_renewal), key=lambda p: p.start_date
+        )
+        assert renewals[0].remaining_days == pytest.approx(38)
+        assert renewals[1].remaining_days == pytest.approx(38 / 1.04)
+
+    def test_zero_growth_keeps_every_year_equal(self):
+        project = Project("Flat", date(2026, 12, 31), 30, years_left=4)
+        scheduler = Scheduler(
+            [project], start_date=date(2026, 1, 1), annual_salary_growth=0.0
+        )
+        scheduler.create_schedule(num_weeks=520, method="paced")
+
+        renewals = [p for p in scheduler.projects if p.is_renewal]
+        assert len(renewals) == 3
+        assert all(p.remaining_days == pytest.approx(30) for p in renewals)
+
+    def test_years_beyond_the_horizon_are_not_created(self):
+        """A long grant on a short horizon only materializes the years it reaches."""
+        project = Project("Long", date(2026, 12, 31), 40, years_left=5)
+
+        scheduler = Scheduler([project], start_date=date(2026, 1, 1))
+        scheduler.create_schedule(num_weeks=104, method="paced")
+
+        renewals = [p for p in scheduler.projects if p.is_renewal]
+        assert len(renewals) == 1  # Only the year starting 2027-01-01 fits
+
+    def test_renewals_do_not_renew_again(self):
+        project = Project("Deep", date(2026, 12, 31), 10, years_left=3)
+
+        scheduler = Scheduler([project], start_date=date(2026, 1, 1))
+        scheduler.create_schedule(num_weeks=520, method="paced")
+
+        renewals = [p for p in scheduler.projects if p.is_renewal]
+        assert len(renewals) == 2
+        assert all(p.renewal_years == 0 for p in renewals)
+
+    def test_renewal_lag_applies_to_every_year(self):
+        project = Project(
+            "Lagged", date(2026, 6, 30), 10, years_left=3, renewal_lag_days=30
+        )
+
+        scheduler = Scheduler([project], start_date=date(2026, 1, 1))
+        scheduler.create_schedule(num_weeks=520, method="paced")
+
+        renewals = sorted(
+            (p for p in scheduler.projects if p.is_renewal), key=lambda p: p.start_date
+        )
+        assert renewals[0].start_date == date(2026, 6, 30) + timedelta(days=31)
+        assert renewals[1].start_date == renewals[0].end_date + timedelta(days=31)
+
+    def test_total_days_grows_with_years_left(self):
+        """The point of years_left: a long horizon shows the full multi-year load."""
+        one_year = Project("P", date(2026, 12, 31), 40)
+        five_years = Project("P", date(2026, 12, 31), 40, years_left=5)
+
+        totals = []
+        for project in (one_year, five_years):
+            scheduler = Scheduler([project], start_date=date(2026, 1, 1))
+            scheduler.create_schedule(num_weeks=520, method="paced")
+            totals.append(sum(p.remaining_days for p in scheduler.projects))
+
+        assert totals[0] == 40
+        assert totals[1] > 40 * 4  # Four discounted renewal years on top
+
+    def test_negative_growth_is_rejected(self):
+        with pytest.raises(ValueError):
+            Scheduler([Project("P", date(2026, 12, 31), 10)], annual_salary_growth=-1)
+
+    def test_years_left_works_with_frontload(self):
+        project = Project("F", date(2026, 3, 31), 5, years_left=3)
+
+        scheduler = Scheduler([project], start_date=date(2026, 1, 1))
+        schedule = scheduler.create_schedule(num_weeks=520, method="frontload")
+
+        scheduled = {
+            s.project.name for s in schedule.slots if s.project is not None
+        }
+        assert "F (Renewal)" in scheduled
+        assert "F (Renewal 2)" in scheduled
 
 
 class TestEDDPrioritization:
@@ -1396,6 +1546,49 @@ class TestProbabilityFiltering:
         assert len(projects) == 1
         assert projects[0].probability == 1.0
 
+    def test_load_projects_without_end_date_defaults_to_one_year(self, tmp_path):
+        """A missing end_date defaults to one year after start_date."""
+        from planner.analysis import load_projects
+
+        config = {
+            "projects": [
+                {
+                    "name": "Missing End Date",
+                    "remaining_days": 10,
+                    "start_date": "2026-01-01",
+                },
+                {
+                    "name": "Null End Date",
+                    "remaining_days": 10,
+                    "start_date": "2026-01-01",
+                    "end_date": None,
+                },
+            ]
+        }
+
+        config_file = tmp_path / "test_config.json"
+        with open(config_file, "w") as f:
+            json.dump(config, f)
+
+        projects = load_projects(str(config_file))
+        assert len(projects) == 2
+        for project in projects:
+            assert project.end_date == date(2026, 1, 1) + timedelta(days=365)
+
+    def test_load_projects_without_end_date_or_start_date(self, tmp_path):
+        """Without a start_date, the default end_date is one year from today."""
+        from planner.analysis import load_projects
+
+        config = {"projects": [{"name": "No Dates", "remaining_days": 10}]}
+
+        config_file = tmp_path / "test_config.json"
+        with open(config_file, "w") as f:
+            json.dump(config, f)
+
+        projects = load_projects(str(config_file))
+        assert projects[0].start_date is None
+        assert projects[0].end_date == date.today() + timedelta(days=365)
+
     def test_scheduler_with_filtered_projects(self):
         """Test that scheduler works correctly with filtered projects."""
         from planner.analysis import filter_projects_by_probability
@@ -1422,3 +1615,1058 @@ class TestProbabilityFiltering:
         assert "High Priority" in scheduled_names
         assert "Medium Priority" in scheduled_names
         assert "Low Priority" not in scheduled_names
+
+
+class TestDayReassignment:
+    """Tests for reassigning paced days that cannot be covered."""
+
+    @staticmethod
+    def _oversubscribed_projects():
+        """Three projects that together demand ~3x the available capacity."""
+        start = date(2026, 1, 5)  # Monday
+        end = start + timedelta(days=180)
+        return [
+            Project(f"P{i}", end, 120, start_date=start, priority=i) for i in range(3)
+        ]
+
+    def test_disabled_by_default(self):
+        """No reassignment happens unless it is asked for."""
+        scheduler = Scheduler(self._oversubscribed_projects(), start_date=date(2026, 1, 5))
+        with pytest.warns(UserWarning):
+            schedule = scheduler.create_schedule(num_weeks=26, method="paced")
+
+        assert schedule.reassignments == []
+        assert schedule.total_reassigned_days == 0
+
+    def test_oversubscription_reassigns_exactly_the_infeasible_days(self):
+        """Only the days that exceed capacity are handed off -- no more, no less."""
+        start = date(2026, 1, 5)
+        projects = self._oversubscribed_projects()
+        scheduler = Scheduler(projects, start_date=start)
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+        capacity = scheduler._count_weekdays_inclusive(start, projects[0].end_date)
+        demand = sum(p.slots_remaining for p in projects)
+        assert schedule.total_reassigned_days == demand - capacity
+
+    def test_lowest_priority_sheds_first(self):
+        """The shedding lands on expendable work, not on the top priority."""
+        scheduler = Scheduler(self._oversubscribed_projects(), start_date=date(2026, 1, 5))
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+        by_name = {p.name: p for p in scheduler.projects}
+
+        # P2 has the highest priority, P0 the lowest
+        assert schedule.reassigned_days_for(by_name["P2"]) == 0
+        assert schedule.reassigned_days_for(by_name["P0"]) > schedule.reassigned_days_for(
+            by_name["P1"]
+        )
+
+    def test_feasible_schedule_reassigns_nothing(self):
+        """A schedule with spare capacity has no days to hand off."""
+        start = date(2026, 1, 5)
+        projects = [
+            Project("Small", start + timedelta(days=180), 20, start_date=start),
+        ]
+        scheduler = Scheduler(projects, start_date=start)
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+        assert schedule.total_reassigned_days == 0
+
+    def test_reassigned_days_leave_the_budget(self):
+        """Days scheduled plus days reassigned account for the whole budget."""
+        scheduler = Scheduler(self._oversubscribed_projects(), start_date=date(2026, 1, 5))
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+        for project in scheduler.projects:
+            scheduled = len(schedule.get_project_slots(project))
+            reassigned = schedule.reassigned_days_for(project)
+            # Deadlines all fall inside the horizon, so nothing is left over
+            assert scheduled + reassigned == project.slots_remaining
+
+    def test_deadline_closes_out_remaining_budget(self):
+        """A project cannot end its life with unaccounted budget."""
+        start = date(2026, 1, 5)
+        # 60 days of work due in a month: most of it has to go to someone else
+        crunched = Project("Crunch", start + timedelta(days=30), 60, start_date=start)
+        scheduler = Scheduler([crunched], start_date=start)
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+        closeout = [r for r in schedule.reassignments if r.date == crunched.end_date]
+        assert closeout
+        assert (
+            len(schedule.get_project_slots(crunched))
+            + schedule.reassigned_days_for(crunched)
+            == crunched.slots_remaining
+        )
+
+    def test_reassignment_frees_capacity_for_priority_work(self):
+        """Handing off days lets the remaining schedule cover more of the budget."""
+        start = date(2026, 1, 5)
+        scheduler_off = Scheduler(self._oversubscribed_projects(), start_date=start)
+        with pytest.warns(UserWarning):
+            baseline = scheduler_off.create_schedule(num_weeks=26, method="paced")
+
+        scheduler_on = Scheduler(self._oversubscribed_projects(), start_date=start)
+        with_reassignment = scheduler_on.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+        # Same capacity, but the shortfall is now accounted for rather than dropped
+        baseline_missing = sum(
+            p.slots_remaining - len(baseline.get_project_slots(p))
+            for p in scheduler_off.projects
+        )
+        remaining_missing = sum(
+            p.slots_remaining
+            - len(with_reassignment.get_project_slots(p))
+            - with_reassignment.reassigned_days_for(p)
+            for p in scheduler_on.projects
+        )
+        assert remaining_missing < baseline_missing
+
+    def test_cadence_controls_checkpoint_count(self):
+        """A shorter cadence books reassignments more often."""
+        start = date(2026, 1, 5)
+        monthly = Scheduler(
+            self._oversubscribed_projects(), start_date=start
+        ).create_schedule(
+            num_weeks=26, method="paced", reassign_days=True,
+            reassignment_cadence_days=30,
+        )
+        weekly = Scheduler(
+            self._oversubscribed_projects(), start_date=start
+        ).create_schedule(
+            num_weeks=26, method="paced", reassign_days=True,
+            reassignment_cadence_days=7,
+        )
+
+        assert len(weekly.reassignments) > len(monthly.reassignments)
+        # Checkpoints land on cadence boundaries counted in calendar days
+        for entry in monthly.reassignments:
+            assert (entry.date - start).days % 30 == 29
+
+    def test_checkpoint_fires_on_weekend_cadence(self):
+        """A cadence landing on a weekend still books its reassignment."""
+        start = date(2026, 1, 5)  # Monday; day offset 5 is Saturday Jan 10
+        schedule = Scheduler(
+            self._oversubscribed_projects(), start_date=start
+        ).create_schedule(
+            num_weeks=26, method="paced", reassign_days=True,
+            reassignment_cadence_days=6,
+        )
+
+        weekend_dates = [r.date for r in schedule.reassignments if r.date.weekday() >= 5]
+        assert weekend_dates
+
+    def test_frontload_rejects_reassignment(self):
+        """Reassignment is a paced-method feature."""
+        scheduler = Scheduler(self._oversubscribed_projects(), start_date=date(2026, 1, 5))
+        with pytest.raises(ValueError, match="paced"):
+            scheduler.create_schedule(
+                num_weeks=26, method="frontload", reassign_days=True
+            )
+
+    def test_invalid_cadence_rejected(self):
+        """A cadence below one day is an error."""
+        scheduler = Scheduler(self._oversubscribed_projects(), start_date=date(2026, 1, 5))
+        with pytest.raises(ValueError, match="cadence"):
+            scheduler.create_schedule(
+                num_weeks=26, method="paced", reassign_days=True,
+                reassignment_cadence_days=0,
+            )
+
+    def test_more_projects_reassign_more_days(self):
+        """Selecting extra (pending) projects increases days reassigned out."""
+        start = date(2026, 1, 5)
+        end = start + timedelta(days=180)
+        active = [Project("Active", end, 100, start_date=start)]
+        pending = [
+            Project(f"Pending {i}", end, 100, start_date=start, probability=0.5)
+            for i in range(3)
+        ]
+
+        few = Scheduler(list(active), start_date=start).create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+        many = Scheduler(active + pending, start_date=start).create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+        assert many.total_reassigned_days > few.total_reassigned_days
+
+
+class TestReassignmentHorizonBoundary:
+    """Reassignment has to account for the edge of the planning horizon.
+
+    Every scenario here has deadlines at or beyond the horizon end. Judging only
+    projects that expire *inside* the horizon made an oversubscribed plan report
+    nothing to reassign, which is what the app showed with all projects selected.
+    """
+
+    START = date(2026, 1, 5)  # Monday
+    WEEKS = 26
+
+    def _horizon_end(self, weeks=None):
+        return self.START + timedelta(days=(weeks or self.WEEKS) * 7 - 1)
+
+    def _solve(self, projects, weeks=None, **kwargs):
+        scheduler = Scheduler(projects, start_date=self.START)
+        schedule = scheduler.create_schedule(
+            num_weeks=weeks or self.WEEKS,
+            method="paced",
+            reassign_days=True,
+            **kwargs,
+        )
+        return scheduler, schedule
+
+    def test_schedule_end_date_is_the_last_day_covered(self):
+        """The horizon ends on the last day iterated, not the day after it.
+
+        Reassignment books its close-outs on real dates, so an end date past the
+        last iterated day is unreachable and a deadline there never settles.
+        """
+        _, schedule = self._solve([Project("P", self._horizon_end(), 10)])
+        last_slot = max(s.date for s in schedule.slots)
+
+        assert schedule.end_date == self._horizon_end()
+        assert last_slot <= schedule.end_date
+        # Every workday up to the end date has a slot
+        assert is_workday(schedule.end_date) == (last_slot == schedule.end_date)
+
+    def test_deadline_on_the_horizon_boundary_is_closed_out(self):
+        """A deadline landing exactly on the last day still sheds its days.
+
+        Regression: the horizon end used to sit one day past the last iterated
+        day, so this project's close-out never fired and the solver spun until it
+        hit the iteration cap.
+        """
+        boundary = self._horizon_end()
+        projects = [
+            Project(f"P{i}", boundary, 120, start_date=self.START, priority=i)
+            for i in range(3)
+        ]
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # no non-convergence warning allowed
+            scheduler, schedule = self._solve(projects)
+
+        capacity = scheduler._count_weekdays_inclusive(self.START, boundary)
+        demand = sum(p.slots_remaining for p in projects)
+        assert schedule.total_reassigned_days == demand - capacity
+
+    def test_oversubscription_past_the_horizon_still_reassigns(self):
+        """The reported bug: deadlines beyond the horizon reported nothing to shed."""
+        projects = [
+            Project(
+                f"P{i}",
+                self.START + timedelta(days=400),
+                120,
+                start_date=self.START,
+                priority=i,
+            )
+            for i in range(3)
+        ]
+        scheduler, schedule = self._solve(projects)
+
+        capacity = scheduler._count_weekdays_inclusive(self.START, schedule.end_date)
+        due = sum(scheduler._due_by_horizon(p, schedule.end_date) for p in projects)
+        assert due > capacity  # the plan really is oversubscribed
+        assert schedule.total_reassigned_days > 0
+
+    def test_deadline_one_day_past_the_horizon_is_measured(self):
+        """Crossing the boundary must not switch measurement off."""
+        inside = [
+            Project(f"In{i}", self._horizon_end(), 120, start_date=self.START)
+            for i in range(3)
+        ]
+        outside = [
+            Project(
+                f"Out{i}",
+                self._horizon_end() + timedelta(days=1),
+                120,
+                start_date=self.START,
+            )
+            for i in range(3)
+        ]
+
+        _, inside_schedule = self._solve(inside)
+        _, outside_schedule = self._solve(outside)
+
+        assert outside_schedule.total_reassigned_days > 0
+        # One extra day of runway can only reduce the shortfall, and barely
+        assert outside_schedule.total_reassigned_days <= (
+            inside_schedule.total_reassigned_days
+        )
+        assert inside_schedule.total_reassigned_days - (
+            outside_schedule.total_reassigned_days
+        ) <= len(inside)
+
+    def test_feasible_past_the_horizon_reassigns_nothing(self):
+        """A project with room to finish after the horizon keeps all of its days."""
+        roomy = Project(
+            "Roomy", self.START + timedelta(days=400), 30, start_date=self.START
+        )
+        _, schedule = self._solve([roomy])
+
+        assert schedule.total_reassigned_days == 0
+
+    def test_horizon_end_closes_out_when_no_checkpoint_fires(self):
+        """A cadence longer than the horizon still books every quota day."""
+        projects = [
+            Project(
+                f"P{i}",
+                self.START + timedelta(days=400),
+                120,
+                start_date=self.START,
+                priority=i,
+            )
+            for i in range(3)
+        ]
+        scheduler, schedule = self._solve(projects, reassignment_cadence_days=365)
+
+        assert schedule.total_reassigned_days > 0
+        assert {r.date for r in schedule.reassignments} == {schedule.end_date}
+
+    def test_binding_deadlines_make_the_horizon_length_irrelevant(self):
+        """When the deadline binds, extending the horizon changes nothing.
+
+        Past-horizon projects are judged on their paced share of the window, so a
+        longer horizon claims more of their budget. Projects that expire inside
+        every horizon tried must be immune to that.
+        """
+        def projects():
+            return [
+                Project(
+                    f"P{i}",
+                    self.START + timedelta(days=180),
+                    120,
+                    start_date=self.START,
+                    priority=i,
+                )
+                for i in range(3)
+            ]
+
+        totals = {
+            weeks: self._solve(projects(), weeks=weeks)[1].total_reassigned_days
+            for weeks in (26, 52, 104)
+        }
+
+        assert len(set(totals.values())) == 1, totals
+        assert totals[26] > 0
+
+
+class TestDueByHorizon:
+    """The budget a project owes before the horizon runs out."""
+
+    START = date(2026, 1, 5)
+    WEEKS = 26
+    HORIZON_END = START + timedelta(days=26 * 7 - 1)
+
+    def _scheduler(self, project):
+        return Scheduler([project], start_date=self.START)
+
+    def _due(self, project):
+        return self._scheduler(project)._due_by_horizon(project, self.HORIZON_END)
+
+    def test_deadline_inside_horizon_owes_the_whole_budget(self):
+        """There is no later date to work on it, so all of it is due."""
+        project = Project("P", self.HORIZON_END - timedelta(days=10), 40)
+        assert self._due(project) == 40
+
+    def test_deadline_on_the_boundary_owes_the_whole_budget(self):
+        project = Project("P", self.HORIZON_END, 40)
+        assert self._due(project) == 40
+
+    def test_deadline_past_horizon_owes_its_paced_share(self):
+        """Half the window inside the horizon means about half the budget."""
+        project = Project("P", self.HORIZON_END + timedelta(days=182), 100)
+        scheduler = self._scheduler(project)
+
+        in_horizon = scheduler._count_weekdays_inclusive(self.START, self.HORIZON_END)
+        window = scheduler._count_weekdays_inclusive(self.START, project.end_date)
+        assert self._due(project) == int(100 * in_horizon / window)
+        assert 0 < self._due(project) < 100
+
+    def test_paced_share_rounds_down(self):
+        """Rounding must never invent a day to hand off."""
+        project = Project("P", self.HORIZON_END + timedelta(days=100), 7)
+        scheduler = self._scheduler(project)
+
+        in_horizon = scheduler._count_weekdays_inclusive(self.START, self.HORIZON_END)
+        window = scheduler._count_weekdays_inclusive(self.START, project.end_date)
+        assert self._due(project) == int(7 * in_horizon / window)
+        assert self._due(project) <= 7 * in_horizon / window
+
+    def test_stale_deadline_owes_nothing(self):
+        """A project that expired before the schedule starts is stale data."""
+        project = Project("P", self.START - timedelta(days=1), 40)
+        assert self._due(project) == 0
+
+    def test_start_after_horizon_owes_nothing(self):
+        project = Project(
+            "P",
+            self.HORIZON_END + timedelta(days=400),
+            40,
+            start_date=self.HORIZON_END + timedelta(days=1),
+        )
+        assert self._due(project) == 0
+
+    def test_later_start_owes_less(self):
+        """The share is measured from when the project starts, not from today."""
+        early = Project(
+            "Early", self.HORIZON_END + timedelta(days=200), 60, start_date=self.START
+        )
+        late = Project(
+            "Late",
+            self.HORIZON_END + timedelta(days=200),
+            60,
+            start_date=self.START + timedelta(days=120),
+        )
+        assert self._due(late) < self._due(early)
+
+    def test_never_owes_more_than_the_budget(self):
+        for offset in (-30, 0, 1, 60, 200, 900):
+            project = Project("P", self.HORIZON_END + timedelta(days=offset), 40)
+            assert 0 <= self._due(project) <= project.slots_remaining
+
+
+class TestReassignmentInvariants:
+    """Properties that must hold for every reassignment solve.
+
+    Swept across scenarios rather than asserted on one, because the failures
+    found here (silent zero totals, quota inflation) only showed up in specific
+    deadline/horizon combinations.
+    """
+
+    START = date(2026, 1, 5)
+
+    SCENARIOS = [
+        # (label, deadline offsets, budgets, priorities, weeks)
+        ("all past horizon", [400, 400, 400], [120, 120, 120], [0, 1, 2], 26),
+        ("all inside horizon", [180, 180, 180], [120, 120, 120], [0, 1, 2], 26),
+        ("straddling the boundary", [181, 182, 183], [120, 120, 120], [0, 0, 0], 26),
+        ("mixed deadlines", [100, 400, 700], [100, 200, 50], [0, 5, 0], 26),
+        ("staggered budgets", [90, 200, 365], [10, 90, 200], [3, 0, 1], 26),
+        ("tiny horizon", [400, 400], [60, 60], [0, 1], 13),
+        ("long horizon", [700, 900], [200, 300], [0, 0], 78),
+        ("one project", [365], [300], [0], 52),
+        ("feasible", [365, 365], [20, 20], [0, 0], 52),
+        ("equal priorities", [300, 300, 300, 300], [80, 80, 80, 80], [7] * 4, 26),
+        ("stale plus live", [-10, 200], [20, 200], [0, 0], 26),
+        # Found by sweeping random workloads: both leave capacity idle unless the
+        # solver hands back quota days the schedule turned out not to need
+        ("quota needs trimming", [348, 247, 390, 287], [41, 137, 118, 88], [100, 0, 5, 5], 52),
+        (
+            "quota needs trimming, short horizon",
+            [181, 111, 178, 386, 333, 109],
+            [99, 23, 112, 57, 148, 126],
+            [1, 5, 0, 5, 100, 0],
+            13,
+        ),
+    ]
+
+    def _cases(self):
+        for label, offsets, budgets, priorities, weeks in self.SCENARIOS:
+            projects = [
+                Project(
+                    f"P{i}",
+                    self.START + timedelta(days=offset),
+                    budget,
+                    start_date=self.START,
+                    priority=priority,
+                )
+                for i, (offset, budget, priority) in enumerate(
+                    zip(offsets, budgets, priorities)
+                )
+            ]
+            scheduler = Scheduler(projects, start_date=self.START)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                schedule = scheduler.create_schedule(
+                    num_weeks=weeks, method="paced", reassign_days=True
+                )
+            yield label, scheduler, schedule
+
+    def test_days_are_positive_whole_days(self):
+        for label, _, schedule in self._cases():
+            for entry in schedule.reassignments:
+                assert isinstance(entry.days, int), label
+                assert entry.days > 0, label
+
+    def test_bookings_land_inside_the_horizon(self):
+        for label, _, schedule in self._cases():
+            for entry in schedule.reassignments:
+                assert self.START <= entry.date <= schedule.end_date, (
+                    f"{label}: {entry.project.name} booked on {entry.date}"
+                )
+
+    def test_a_project_never_sheds_more_than_it_has(self):
+        """Scheduled plus reassigned can never exceed the budget."""
+        for label, scheduler, schedule in self._cases():
+            for project in scheduler.projects:
+                scheduled = len(schedule.get_project_slots(project))
+                reassigned = schedule.reassigned_days_for(project)
+                assert reassigned <= project.slots_remaining, label
+                assert scheduled + reassigned <= project.slots_remaining, (
+                    f"{label}: {project.name} over-booked"
+                )
+
+    def test_reassignment_does_not_overshoot_what_was_due(self):
+        """A project that sheds days must not be credited past what it owed.
+
+        Scheduled plus reassigned overshooting ``_due_by_horizon`` means days were
+        handed off that the project went on to book anyway -- the day is counted
+        twice and the worker looks busier than they are. One day of slack is
+        allowed for integer rounding of the paced share.
+        """
+        for label, scheduler, schedule in self._cases():
+            for project in scheduler.projects:
+                if not schedule.reassigned_days_for(project):
+                    continue
+                accounted = len(schedule.get_project_slots(project)) + (
+                    schedule.reassigned_days_for(project)
+                )
+                due = scheduler._due_by_horizon(project, schedule.end_date)
+                assert accounted <= due + 1, (
+                    f"{label}: {project.name} accounted for {accounted} of {due} due"
+                )
+
+    def test_stale_projects_are_never_reassigned(self):
+        """A deadline in the past is bad data, not work to hand off."""
+        for label, scheduler, schedule in self._cases():
+            for project in scheduler.projects:
+                if project.end_date < self.START:
+                    assert schedule.reassigned_days_for(project) == 0, label
+
+    def test_totals_agree_with_the_ledger(self):
+        for label, scheduler, schedule in self._cases():
+            per_project = sum(
+                schedule.reassigned_days_for(p) for p in scheduler.projects
+            )
+            assert per_project == schedule.total_reassigned_days, label
+            assert sum(r.days for r in schedule.reassignments) == (
+                schedule.total_reassigned_days
+            ), label
+
+    def test_reassignment_never_idles_capacity_it_could_have_used(self):
+        """Days are only shed once the horizon is genuinely full."""
+        for label, _, schedule in self._cases():
+            if schedule.total_reassigned_days == 0:
+                continue
+            idle = sum(1 for slot in schedule.slots if slot.project is None)
+            assert idle == 0, f"{label}: shed days while {idle} workdays sat idle"
+
+    def test_solve_is_deterministic(self):
+        """The same workload must always produce the same ledger."""
+        def ledger(schedule):
+            return [(r.project.name, r.date, r.days) for r in schedule.reassignments]
+
+        for (label, _, first), (_, _, second) in zip(self._cases(), self._cases()):
+            assert ledger(first) == ledger(second), label
+
+    def test_enabling_reassignment_does_not_lose_scheduled_work(self):
+        """Reassignment reallocates the horizon; it must not waste it."""
+        for label, offsets, budgets, priorities, weeks in self.SCENARIOS:
+            def build():
+                return [
+                    Project(
+                        f"P{i}",
+                        self.START + timedelta(days=offset),
+                        budget,
+                        start_date=self.START,
+                        priority=priority,
+                    )
+                    for i, (offset, budget, priority) in enumerate(
+                        zip(offsets, budgets, priorities)
+                    )
+                ]
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                off = Scheduler(build(), start_date=self.START).create_schedule(
+                    num_weeks=weeks, method="paced"
+                )
+                on = Scheduler(build(), start_date=self.START).create_schedule(
+                    num_weeks=weeks, method="paced", reassign_days=True
+                )
+
+            booked_off = sum(1 for s in off.slots if s.project)
+            booked_on = sum(1 for s in on.slots if s.project)
+            assert booked_on + on.total_reassigned_days >= booked_off, label
+
+
+class TestReassignmentSolver:
+    """The schedule/measure loop that decides how many days to hand off."""
+
+    START = date(2026, 1, 5)
+
+    @staticmethod
+    def _past_horizon_projects(n=3, budget=120):
+        start = TestReassignmentSolver.START
+        return [
+            Project(
+                f"P{i}",
+                start + timedelta(days=400),
+                budget,
+                start_date=start,
+                priority=i,
+            )
+            for i in range(n)
+        ]
+
+    def test_ordinary_oversubscription_converges_quietly(self):
+        """No warning: the solver should settle without hitting its cap."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            schedule = Scheduler(
+                self._past_horizon_projects(), start_date=self.START
+            ).create_schedule(num_weeks=26, method="paced", reassign_days=True)
+
+        assert schedule.total_reassigned_days > 0
+
+    def test_single_iteration_cannot_shed_and_says_so(self):
+        """The first pass has no quotas, so one iteration reassigns nothing."""
+        with pytest.warns(UserWarning, match="behind pace"):
+            schedule = Scheduler(
+                self._past_horizon_projects(), start_date=self.START
+            ).create_schedule(
+                num_weeks=26,
+                method="paced",
+                reassign_days=True,
+                max_reassignment_iterations=1,
+            )
+
+        assert schedule.total_reassigned_days == 0
+
+    def test_invalid_iteration_cap_rejected(self):
+        with pytest.raises(ValueError, match="max_reassignment_iterations"):
+            Scheduler(
+                self._past_horizon_projects(), start_date=self.START
+            ).create_schedule(
+                num_weeks=26,
+                method="paced",
+                reassign_days=True,
+                max_reassignment_iterations=0,
+            )
+
+    def test_unshedable_shortfall_warns_instead_of_inflating_quotas(self):
+        """A capacity-bound project must not be given quota forever.
+
+        Its reassigned days displace days it would have been scheduled, so the
+        shortfall never closes. The solver used to grow the quota every pass until
+        the cap, handing off days that bought back no time.
+        """
+        start = self.START
+        projects = [
+            Project("Tight", start + timedelta(days=104), 109, start_date=start),
+            Project("Long", start + timedelta(days=444), 145, start_date=start),
+            Project("Top", start + timedelta(days=586), 28, start_date=start, priority=100),
+            Project("Bound", start + timedelta(days=207), 106, start_date=start, priority=100),
+        ]
+        scheduler = Scheduler(projects, start_date=start)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            schedule = scheduler.create_schedule(
+                num_weeks=26, method="paced", reassign_days=True
+            )
+
+        bound = next(p for p in scheduler.projects if p.name == "Bound")
+        due = scheduler._due_by_horizon(bound, schedule.end_date)
+        scheduled = len(schedule.get_project_slots(bound))
+        # It sheds no more than the gap it was actually short
+        assert schedule.reassigned_days_for(bound) <= due - scheduled
+        assert any("behind pace" in str(w.message) for w in caught)
+
+    def test_solver_prefers_the_leanest_feasible_pass(self):
+        """Quota given back once a project can book its own days is not re-shed."""
+        projects = self._past_horizon_projects()
+        scheduler = Scheduler(projects, start_date=self.START)
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+        # Every shed day must still be missing from the project's own progress
+        for project in scheduler.projects:
+            reassigned = schedule.reassigned_days_for(project)
+            if not reassigned:
+                continue
+            due = scheduler._due_by_horizon(project, schedule.end_date)
+            scheduled = len(schedule.get_project_slots(project))
+            assert reassigned <= max(0, due - scheduled) + project.slots_remaining - due
+
+    def test_higher_priority_sheds_last_across_the_horizon(self):
+        """Priority ordering still decides who gives up days past the horizon."""
+        scheduler = Scheduler(self._past_horizon_projects(), start_date=self.START)
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+        by_name = {p.name: p for p in scheduler.projects}
+
+        assert schedule.reassigned_days_for(by_name["P2"]) <= (
+            schedule.reassigned_days_for(by_name["P0"])
+        )
+        assert schedule.reassigned_days_for(by_name["P0"]) > 0
+
+    def test_cadence_changes_when_not_whether_days_are_shed(self):
+        """Every cadence accounts for its days; only the checkpoints differ."""
+        totals = {}
+        for cadence in (1, 7, 30, 90, 400):
+            scheduler = Scheduler(self._past_horizon_projects(), start_date=self.START)
+            schedule = scheduler.create_schedule(
+                num_weeks=26,
+                method="paced",
+                reassign_days=True,
+                reassignment_cadence_days=cadence,
+            )
+            totals[cadence] = schedule.total_reassigned_days
+            assert sum(r.days for r in schedule.reassignments) == (
+                schedule.total_reassigned_days
+            )
+
+        assert all(total > 0 for total in totals.values()), totals
+
+    def test_renewal_projects_can_shed_days(self):
+        """Generated renewals are budget too, and compete for the same horizon."""
+        start = self.START
+        projects = [
+            Project("R", start + timedelta(days=60), 40, start_date=start, renewal_days=60),
+            Project("Hog", start + timedelta(days=400), 200, start_date=start, priority=9),
+        ]
+        scheduler = Scheduler(projects, start_date=start)
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+        renewal = next(p for p in scheduler.projects if p.is_renewal)
+        assert schedule.reassigned_days_for(renewal) > 0
+        assert schedule.reassigned_days_for(renewal) <= renewal.slots_remaining
+
+    def test_zero_day_and_fractional_projects(self):
+        """A zero-day project sheds nothing; a fractional one sheds whole days."""
+        start = self.START
+        projects = [
+            Project("Zero", start + timedelta(days=30), 0, start_date=start),
+            Project("Half", start + timedelta(days=30), 60.5, start_date=start),
+        ]
+        scheduler = Scheduler(projects, start_date=start)
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+        by_name = {p.name: p for p in scheduler.projects}
+
+        assert schedule.reassigned_days_for(by_name["Zero"]) == 0
+        assert schedule.reassigned_days_for(by_name["Half"]) > 0
+        assert schedule.reassigned_days_for(by_name["Half"]) <= 60
+
+    def test_empty_project_list(self):
+        schedule = Scheduler([], start_date=self.START).create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+        assert schedule.reassignments == []
+        assert schedule.total_reassigned_days == 0
+
+    def test_project_starting_after_the_horizon(self):
+        """Work that has not started yet owes nothing inside the horizon."""
+        start = self.START
+        late = Project(
+            "Late",
+            start + timedelta(days=500),
+            100,
+            start_date=start + timedelta(days=300),
+        )
+        schedule = Scheduler([late], start_date=start).create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+        assert schedule.total_reassigned_days == 0
+
+    def test_more_demand_never_sheds_fewer_days(self):
+        """Adding projects to an oversubscribed plan can only push more work out."""
+        totals = []
+        for n in range(1, 6):
+            scheduler = Scheduler(
+                self._past_horizon_projects(n), start_date=self.START
+            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                schedule = scheduler.create_schedule(
+                    num_weeks=26, method="paced", reassign_days=True
+                )
+            totals.append(schedule.total_reassigned_days)
+
+        assert totals == sorted(totals), totals
+        assert totals[-1] > 0
+
+
+class TestReassignmentWithRealisticWorkload:
+    """A workload shaped like a real worker's file: pending work due past the horizon.
+
+    This is the case the app got wrong -- eleven active projects that fit, plus
+    pending ones whose deadlines fall just past a 52-week horizon.
+    """
+
+    START = date(2026, 9, 7)
+    WEEKS = 52
+
+    @staticmethod
+    def _active():
+        return [
+            Project("PAR 1", date(2026, 12, 24), 15, priority=100000),
+            Project("PAR 2", date(2027, 3, 3), 15, priority=1000),
+            Project("OPTIC", date(2027, 6, 30), 30),
+            Project("HIV", date(2027, 7, 31), 22),
+            Project("Calibration", date(2027, 5, 31), 22),
+            Project("CRC Costs", date(2027, 3, 31), 17),
+            Project("COVID", date(2027, 8, 31), 8),
+            Project("MGS", date(2026, 10, 15), 6, priority=10),
+            Project("B&P HC", date(2026, 9, 30), 3),
+            Project("B&P GER", date(2026, 9, 30), 3),
+            Project("BSV", date(2027, 1, 31), 30),
+        ]
+
+    @staticmethod
+    def _pending():
+        return [
+            Project("CDC/TGS", date(2027, 10, 20), 50, priority=100, probability=0.9),
+            Project("Blueprint", date(2027, 11, 1), 45, probability=0.8),
+            Project("CISNET", date(2027, 12, 1), 40, probability=0.7),
+            Project("State Dep", date(2027, 12, 1), 40, probability=0.7),
+        ]
+
+    def _solve(self, projects):
+        scheduler = Scheduler(projects, start_date=self.START)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            schedule = scheduler.create_schedule(
+                num_weeks=self.WEEKS, method="paced", reassign_days=True
+            )
+        return scheduler, schedule
+
+    def test_active_only_workload_fits(self):
+        """The active book of work has slack, so nothing needs to move."""
+        _, schedule = self._solve(self._active())
+
+        assert schedule.total_reassigned_days == 0
+        assert any(slot.project is None for slot in schedule.slots)
+
+    def test_selecting_everything_reassigns_days(self):
+        """Selecting all projects used to report zero days to reassign."""
+        scheduler, schedule = self._solve(self._active() + self._pending())
+
+        assert schedule.total_reassigned_days > 0
+        # The horizon is full: every shed day is one that genuinely did not fit
+        assert all(slot.project is not None for slot in schedule.slots)
+
+    def test_pending_work_is_what_gets_shed(self):
+        """Deadline-pressured active work keeps its days; speculative work sheds."""
+        scheduler, schedule = self._solve(self._active() + self._pending())
+        pending_names = {p.name for p in self._pending()}
+
+        shed = {
+            p.name: schedule.reassigned_days_for(p)
+            for p in scheduler.projects
+            if schedule.reassigned_days_for(p)
+        }
+        assert shed
+        # Nothing with a hard near-term deadline should be handed off
+        assert "PAR 1" not in shed
+        assert "MGS" not in shed
+        assert pending_names & set(shed)
+
+    def test_adding_pending_projects_increases_reassignment(self):
+        totals = []
+        pending = self._pending()
+        for count in range(len(pending) + 1):
+            _, schedule = self._solve(self._active() + pending[:count])
+            totals.append(schedule.total_reassigned_days)
+
+        assert totals == sorted(totals), totals
+        assert totals[0] == 0
+        assert totals[-1] > 0
+
+    def test_summary_and_table_agree_with_the_schedule(self):
+        """What the Reassignment tab totals must match the schedule ledger."""
+        from planner.analysis import (
+            compute_monthly_reassigned_days,
+            create_reassignment_table,
+        )
+
+        _, schedule = self._solve(self._active() + self._pending())
+        long_format = compute_monthly_reassigned_days(schedule)
+        table = create_reassignment_table(schedule)
+
+        assert long_format["reassigned_days"].sum() == schedule.total_reassigned_days
+        assert int(table.iloc[-1]["Total"]) == schedule.total_reassigned_days
+
+
+class TestReassignmentTable:
+    """Tests for the project-by-month reassignment table."""
+
+    @staticmethod
+    def _schedule_with_reassignments():
+        start = date(2026, 1, 5)
+        end = start + timedelta(days=180)
+        projects = [
+            Project(f"P{i}", end, 120, start_date=start, priority=i) for i in range(3)
+        ]
+        scheduler = Scheduler(projects, start_date=start)
+        return scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+    def test_monthly_long_format(self):
+        """Long-format output totals to the schedule's reassigned days."""
+        from planner.analysis import compute_monthly_reassigned_days
+
+        schedule = self._schedule_with_reassignments()
+        df = compute_monthly_reassigned_days(schedule)
+
+        assert list(df.columns) == [
+            "year",
+            "month",
+            "month_name",
+            "project",
+            "reassigned_days",
+        ]
+        assert df["reassigned_days"].sum() == schedule.total_reassigned_days
+
+    def test_table_shape_and_totals(self):
+        """Rows are projects plus a total row; columns span the horizon."""
+        from planner.analysis import create_reassignment_table
+
+        schedule = self._schedule_with_reassignments()
+        table = create_reassignment_table(schedule)
+
+        assert table.columns[0] == "Project"
+        assert table.columns[-1] == "Total"
+        assert table.iloc[-1]["Project"] == "Total"
+        assert int(table.iloc[-1]["Total"]) == schedule.total_reassigned_days
+
+        # One column per month in the horizon, between Project and Total
+        months = len(table.columns) - 2
+        assert months == 7  # Jan 2026 through Jul 2026
+
+    def test_empty_when_nothing_reassigned(self):
+        """A schedule without reassignments yields a table with no rows."""
+        from planner.analysis import (
+            compute_monthly_reassigned_days,
+            create_reassignment_table,
+        )
+
+        start = date(2026, 1, 5)
+        projects = [Project("Small", start + timedelta(days=180), 20, start_date=start)]
+        schedule = Scheduler(projects, start_date=start).create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+        assert compute_monthly_reassigned_days(schedule).empty
+        table = create_reassignment_table(schedule)
+        assert table.empty
+        assert list(table.columns)[0] == "Project"
+
+
+class TestPacedPriority:
+    """Paced scheduling must honor project priority, not just pacing credit."""
+
+    @staticmethod
+    def _contending_projects(favored_priority):
+        """Three identical, oversubscribed projects; one may be favored."""
+        start = date(2026, 1, 5)  # Monday
+        end = start + timedelta(days=180)
+        return [
+            Project(
+                name,
+                end,
+                120,
+                start_date=start,
+                priority=favored_priority if name == "Favored" else 0,
+            )
+            for name in ("Favored", "Other A", "Other B")
+        ]
+
+    def _run(self, favored_priority):
+        start = date(2026, 1, 5)
+        projects = self._contending_projects(favored_priority)
+        scheduler = Scheduler(projects, start_date=start)
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+        favored = next(p for p in scheduler.projects if p.name == "Favored")
+        return schedule, favored
+
+    def test_priority_wins_slots_under_contention(self):
+        """A higher-priority project is scheduled more than its equal-sized peers."""
+        schedule, favored = self._run(favored_priority=10)
+
+        favored_days = len(schedule.get_project_slots(favored))
+        others = [
+            len(schedule.get_project_slots(p))
+            for p in {s.project for s in schedule.slots if s.project}
+            if p.name != "Favored"
+        ]
+        assert favored_days > max(others)
+
+    def test_priority_reduces_reassigned_days(self):
+        """Raising priority moves reassignment off that project onto the rest."""
+        baseline, baseline_favored = self._run(favored_priority=0)
+        raised, raised_favored = self._run(favored_priority=10)
+
+        assert raised.reassigned_days_for(
+            raised_favored
+        ) < baseline.reassigned_days_for(baseline_favored)
+
+    def test_priority_is_ordinal_not_a_magnitude(self):
+        """Only the ranking matters, so any winning priority behaves the same."""
+        low, low_favored = self._run(favored_priority=5)
+        high, high_favored = self._run(favored_priority=100)
+
+        assert low.reassigned_days_for(low_favored) == high.reassigned_days_for(
+            high_favored
+        )
+
+    def test_deadline_feasibility_outranks_a_roomy_high_priority_project(self):
+        """A deadline-critical project keeps its days against a project with slack.
+
+        ``Roomy`` has the higher priority but is nowhere near needing every
+        workday, so the feasibility guards protect ``Urgent`` regardless.
+        """
+        start = date(2026, 1, 5)
+        urgent = Project("Urgent", start + timedelta(days=13), 10, start_date=start)
+        roomy = Project(
+            "Roomy", start + timedelta(days=180), 40, start_date=start, priority=50
+        )
+        scheduler = Scheduler([urgent, roomy], start_date=start)
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+        assert len(schedule.get_project_slots(urgent)) == urgent.slots_remaining
+        assert schedule.reassigned_days_for(urgent) == 0
+
+    def test_priority_decides_who_sheds_days_when_all_are_infeasible(self):
+        """When every project needs every workday, priority keeps its budget."""
+        start = date(2026, 1, 5)
+        # Both need more days than the window holds, so one of them must shed
+        favored = Project(
+            "Favored", start + timedelta(days=30), 30, start_date=start, priority=10
+        )
+        other = Project("Other", start + timedelta(days=30), 30, start_date=start)
+        scheduler = Scheduler([favored, other], start_date=start)
+        schedule = scheduler.create_schedule(
+            num_weeks=26, method="paced", reassign_days=True
+        )
+
+        assert len(schedule.get_project_slots(favored)) > len(
+            schedule.get_project_slots(other)
+        )
+        assert schedule.reassigned_days_for(favored) < schedule.reassigned_days_for(
+            other
+        )

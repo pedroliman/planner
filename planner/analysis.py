@@ -10,7 +10,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from planner.holidays import is_workday
-from planner.models import Project, Schedule
+from planner.models import DEFAULT_DURATION_DAYS, Project, Schedule
 
 
 def _hsl_to_rgb(hue: float, saturation: float, lightness: float) -> tuple[int, int, int]:
@@ -55,6 +55,15 @@ def _hsl_to_rgb(hue: float, saturation: float, lightness: float) -> tuple[int, i
 def load_projects(config_path: str) -> list[Project]:
     """Load projects from JSON configuration file.
 
+    A missing or null ``end_date`` defaults to one year (365 days) after the
+    project's ``start_date``, or after today when no start date is given. This
+    matches the annual budget cycle most projects follow, and the same one-year
+    span the scheduler uses for renewals.
+
+    ``years_left`` counts the current year, so it defaults to 1 (no renewal) and
+    is clamped there: the scheduler turns anything above 1 into that many renewal
+    years.
+
     Args:
         config_path: Path to the projects.json configuration file
 
@@ -73,13 +82,16 @@ def load_projects(config_path: str) -> list[Project]:
 
     projects = []
     for i, p in enumerate(data.get("projects", [])):
-        end_date = datetime.strptime(p["end_date"], "%Y-%m-%d").date()
-
         # Only set start_date if explicitly provided in JSON
         # If None, scheduler will use its own start_date
         start_date = None
         if "start_date" in p and p["start_date"]:
             start_date = datetime.strptime(p["start_date"], "%Y-%m-%d").date()
+
+        if p.get("end_date"):
+            end_date = datetime.strptime(p["end_date"], "%Y-%m-%d").date()
+        else:
+            end_date = (start_date or date.today()) + timedelta(days=DEFAULT_DURATION_DAYS)
 
         renewal_days = None
         if "renewal_days" in p and p["renewal_days"]:
@@ -88,6 +100,10 @@ def load_projects(config_path: str) -> list[Project]:
         renewal_lag_days = None
         if "renewal_lag_days" in p and p["renewal_lag_days"] is not None:
             renewal_lag_days = int(p["renewal_lag_days"])
+
+        years_left = 1
+        if p.get("years_left") is not None:
+            years_left = max(1, int(p["years_left"]))
 
         priority = 0
         if "priority" in p and p["priority"] is not None:
@@ -104,6 +120,7 @@ def load_projects(config_path: str) -> list[Project]:
             start_date=start_date,
             renewal_days=renewal_days,
             renewal_lag_days=renewal_lag_days,
+            years_left=years_left,
             priority=priority,
             probability=probability,
             _color_index=i,
@@ -198,6 +215,99 @@ def compute_monthly_unassigned_days(
     merged["unassigned_days"] = merged["unassigned_days"].fillna(0).astype(int)
     merged = merged[["year", "month", "month_name", "unassigned_days"]]
     return merged
+
+
+def compute_monthly_reassigned_days(schedule: Schedule) -> pd.DataFrame:
+    """Compute days reassigned out of each project, per month.
+
+    Args:
+        schedule: Schedule object to analyze (needs a schedule built with
+            reassignment enabled; otherwise the result is empty)
+
+    Returns:
+        Long-format DataFrame with columns: year, month, month_name, project,
+        reassigned_days
+    """
+    columns = ["year", "month", "month_name", "project", "reassigned_days"]
+    if not schedule.reassignments:
+        return pd.DataFrame(columns=columns)
+
+    totals: dict[tuple[int, int, str], int] = {}
+    for entry in schedule.reassignments:
+        key = (entry.date.year, entry.date.month, entry.project.name)
+        totals[key] = totals.get(key, 0) + entry.days
+
+    data = [
+        {
+            "year": year,
+            "month": month,
+            "month_name": datetime(year, month, 1).strftime("%b %Y"),
+            "project": project,
+            "reassigned_days": days,
+        }
+        for (year, month, project), days in sorted(totals.items())
+    ]
+    return pd.DataFrame(data, columns=columns)
+
+
+def create_reassignment_table(schedule: Schedule) -> pd.DataFrame:
+    """Build a project-by-month table of reassigned days.
+
+    Rows are projects (busiest reassigners first) plus a total row; columns are
+    every month in the schedule horizon, so the shape stays stable as projects
+    are toggled on and off. Zeros are blanked out to keep the table readable.
+
+    Args:
+        schedule: Schedule object to analyze
+
+    Returns:
+        DataFrame with a ``Project`` column, one column per month, and a
+        ``Total`` column. Empty (no rows) when nothing was reassigned.
+    """
+    df = compute_monthly_reassigned_days(schedule)
+
+    # Month columns span the horizon, not just the months with reassignments
+    start = schedule.start_date
+    end = schedule.end_date
+    if start is None or end is None:
+        dates = [s.date for s in schedule.slots] + [
+            r.date for r in schedule.reassignments
+        ]
+        if not dates:
+            return pd.DataFrame(columns=["Project", "Total"])
+        start = start or min(dates)
+        end = end or max(dates)
+
+    month_starts = pd.date_range(
+        start=date(start.year, start.month, 1),
+        end=date(end.year, end.month, 1),
+        freq="MS",
+    )
+    month_names = list(month_starts.strftime("%b %Y"))
+
+    if df.empty:
+        return pd.DataFrame(columns=["Project", *month_names, "Total"])
+
+    pivot = df.pivot_table(
+        index="project",
+        columns="month_name",
+        values="reassigned_days",
+        aggfunc="sum",
+        fill_value=0,
+    )
+    pivot = pivot.reindex(columns=month_names, fill_value=0)
+    pivot = pivot.fillna(0).astype(int)
+    pivot["Total"] = pivot.sum(axis=1)
+    pivot = pivot.sort_values("Total", ascending=False)
+
+    totals = pivot.sum(axis=0)
+    out = pivot.reset_index().rename(columns={"project": "Project"})
+    out.loc[len(out)] = ["Total", *totals.tolist()]
+
+    # Blank zeros so the reassigned months stand out
+    for column in [*month_names, "Total"]:
+        out[column] = out[column].map(lambda v: "" if v == 0 else str(v))
+    return out
 
 
 def compute_weekly_availability(schedule: Schedule, num_weeks: int) -> list[dict]:
